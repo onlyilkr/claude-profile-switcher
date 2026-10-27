@@ -1,0 +1,50 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: swift --version
+      - name: Unit tests
+        run: swift test
+      - name: App bundle, universal and ad-hoc signed
+        run: scripts/build-app.sh
+      - name: Command line smoke test
+        run: |
+          CPS="build/Claude Profile Switcher.app/Contents/MacOS/ClaudeProfileSwitcher"
+          "$CPS" --help > /dev/null
+          "$CPS" --version
+          # No Claude on the runner: --list has to say so and fail, not crash.
+          if "$CPS" --list 2> err.txt; then echo "--list should fail without Claude"; exit 1; fi
+          grep -q "Claude desktop app" err.txt
+          # Unknown arguments are usage errors (exit 2).
+          set +e; "$CPS" --nope 2> /dev/null; code=$?; set -e
+          test "$code" -eq 2
+  release-dry-run:
+    # Builds the release exactly as the tag workflow does, without publishing, so
+    # packaging and the cask template are checked before a tag is pushed.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: scripts/package-release.sh 0.0.0-ci
+      - name: Archive checks
+        run: |
+          cd dist
+          shasum -a 256 -c checksums.txt
+          ditto -x -k Claude-Profile-Switcher-0.0.0-ci.zip extracted
+          codesign --verify --deep --strict "extracted/Claude Profile Switcher.app"
+          plutil -extract CFBundleShortVersionString raw "extracted/Claude Profile Switcher.app/Contents/Info.plist" | grep -qx 0.0.0-ci
+          # Both architectures, or the build fell back to the runner's own.
+          archs=$(lipo -archs "extracted/Claude Profile Switcher.app/Contents/MacOS/ClaudeProfileSwitcher")
+          [[ "$archs" == *arm64* && "$archs" == *x86_64* ]] || { echo "not universal: $archs"; exit 1; }
+          ruby -c claude-profile-switcher.rb

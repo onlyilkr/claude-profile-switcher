@@ -1,0 +1,68 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+# One release at a time, so two tags cannot race each other into the tap.
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: macos-latest
+    # Create this environment in the repo settings and restrict it to v* tags.
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The tag must be on main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::$GITHUB_REF_NAME is not on main; releases are cut from main only."
+            exit 1
+          }
+      - name: Unit tests
+        run: swift test
+      - name: Build and package
+        run: scripts/package-release.sh "${GITHUB_REF_NAME#v}"
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          prerelease=()
+          [[ "$GITHUB_REF_NAME" == *-* ]] && prerelease=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" "${prerelease[@]}" \
+            --notes-file dist/release-notes.md \
+            dist/Claude-Profile-Switcher-*.zip dist/checksums.txt dist/claude-profile-switcher.rb
+
+  tap:
+    # Its own job, so the tap token never shares a machine with the build and tests above.
+    # It runs no compiled code: it downloads the cask the release published and sends it.
+    needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: macos-latest
+    environment: release
+    permissions:
+      contents: read
+    env:
+      HAS_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch the published cask
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release download "$GITHUB_REF_NAME" --pattern claude-profile-switcher.rb --dir dist
+      - name: Update the Homebrew tap
+        if: env.HAS_TAP_TOKEN == 'true'
+        env:
+          # Fine-grained PAT: contents read/write on onlyilkr/homebrew-tap only.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: scripts/update-tap.sh "${GITHUB_REF_NAME#v}"

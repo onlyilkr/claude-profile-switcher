@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Claude Profile Switcher</string>
+	<key>CFBundleExecutable</key>
+	<string>ClaudeProfileSwitcher</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.onlyilkr.ClaudeProfileSwitcher</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Claude Profile Switcher</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<!-- Only becomes the claude:// handler when sign-in routing is turned on. -->
+			<key>CFBundleURLName</key>
+			<string>Claude Profile Router</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>claude</string>
+			</array>
+		</dict>
+		<dict>
+			<!-- Used by the launcher apps in ~/Applications. -->
+			<key>CFBundleURLName</key>
+			<string>Claude Profile Switcher</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>claudeprofileswitcher</string>
+			</array>
+		</dict>
+	</array>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Several copies of Claude run at once, one per account. The switcher talks to one of them at a time: to show the window of an account that is already open, and to hand a sign-in link to the account that asked for it.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>

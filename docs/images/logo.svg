@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">Claude Profile Switcher</title>
+  <!-- Two accounts; the front one wears the green ring the panel uses for "open". -->
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F7F9FC"/>
+      <stop offset="1" stop-color="#D8E0EB"/>
+    </linearGradient>
+    <clipPath id="back"><circle cx="392" cy="398" r="176"/></clipPath>
+    <clipPath id="front"><circle cx="588" cy="584" r="176"/></clipPath>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#background)"/>
+  <rect x="101" y="101" width="822" height="822" rx="184" fill="none" stroke="#000000" stroke-opacity="0.07" stroke-width="2"/>
+
+  <circle cx="392" cy="398" r="176" fill="#C0566F"/>
+  <g clip-path="url(#back)" fill="#FFFFFF" fill-opacity="0.85">
+    <circle cx="392" cy="356" r="58"/>
+    <ellipse cx="392" cy="510" rx="112" ry="86"/>
+  </g>
+
+  <circle cx="588" cy="584" r="218" fill="#2EAA5C"/>
+  <circle cx="588" cy="584" r="197" fill="#FFFFFF"/>
+  <circle cx="588" cy="584" r="176" fill="#3E7FB4"/>
+  <g clip-path="url(#front)" fill="#FFFFFF" fill-opacity="0.92">
+    <circle cx="588" cy="542" r="58"/>
+    <ellipse cx="588" cy="696" rx="112" ry="86"/>
+  </g>
+</svg>

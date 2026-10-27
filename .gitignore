@@ -1,0 +1,15 @@
+.build/
+build/
+.swiftpm/
+*.xcodeproj/
+.DS_Store
+dist/
+
+# Signing material never belongs in the repository.
+*.p12
+*.p8
+*.cer
+*.mobileprovision
+*.provisionprofile
+.env
+.env.*

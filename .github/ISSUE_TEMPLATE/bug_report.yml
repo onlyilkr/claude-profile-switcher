@@ -1,0 +1,74 @@
+name: Bug report
+description: Something went wrong or behaved unexpectedly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The switcher relies on undocumented Claude Desktop behaviour, so the versions below matter.
+        If the bug involves lost chats, a deleted profile or a damaged Claude setting, read SECURITY.md first.
+        Command output contains paths with your macOS user name and profile names: replace them with `USER` and `Account` before pasting.
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "26.1"
+    validations:
+      required: true
+  - type: input
+    id: desktop
+    attributes:
+      label: Claude Desktop version
+      description: "Claude menu, About Claude."
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Claude Profile Switcher version
+      description: Output of `claude-profiles --version`, or Get Info on the app in Finder. (The panel's footer shows Claude's version.)
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installed with
+      options:
+        - Homebrew
+        - Release zip
+        - Built from source
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: Output of `claude-profiles --status` and `claude-profiles --list`
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did
+      placeholder: "Clicked Work in the panel while Default was open..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include any message the panel showed.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The last lines of `~/Library/Application Support/Claude Profile Switcher/sign-in-router.log` and `switcher-error.log`, if they exist. They never contain sign-in links or tokens.
+      render: text
