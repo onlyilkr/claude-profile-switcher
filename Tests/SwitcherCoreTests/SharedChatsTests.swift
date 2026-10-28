@@ -115,3 +115,145 @@ final class TranscriptDiffTests: XCTestCase {
         XCTAssertEqual(rel, .firstAhead(messages: 1000))
     }
 }
+
+final class WorktreeLeasesTests: XCTestCase {
+    private var dir: URL!
+    private var profile: Profile!
+
+    override func setUpWithError() throws {
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent("worktree-leases-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        profile = Profile(id: "Work", name: "Work", path: dir)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    private func sample(leasedBy: Any = "local_A") -> [String: Any] {
+        [
+            "schemaVersion": 2,
+            "worktrees": [
+                "wt-one": [
+                    "name": "wt-one", "path": "/r/.claude/worktrees/wt-one", "leasedBy": leasedBy,
+                    "baseRepo": "/r", "branch": "claude/wt-one", "sourceBranch": "main", "createdAt": 1_700_000_000_000,
+                    "autoTrusted": true, "leaseCleared": true, "pooledAt": 5, "parkedStateKey": "k", "uncleanSince": 7,
+                ] as [String: Any],
+            ] as [String: Any],
+            "untrackedDirGc": ["a": 1], "originUrls": ["u": "x"], "originPins": ["p": "y"],
+        ]
+    }
+
+    private func writeRaw(_ obj: Any) throws {
+        let data = try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .withoutEscapingSlashes])
+        try data.write(to: WorktreeLeases.file(profile))
+    }
+
+    func testLeasesReadStates() throws {
+        XCTAssertEqual(WorktreeLeases.read(profile), .missing)
+        try Data("{ nope".utf8).write(to: WorktreeLeases.file(profile))
+        XCTAssertEqual(WorktreeLeases.read(profile), .unreadable)
+        var v3 = sample(); v3["schemaVersion"] = 3
+        try writeRaw(v3)
+        XCTAssertEqual(WorktreeLeases.read(profile), .unsupported(schema: 3))
+        try writeRaw(["worktrees": [String: Any]()])
+        XCTAssertEqual(WorktreeLeases.read(profile), .unsupported(schema: nil))
+        try writeRaw(sample())
+        guard case .ok(let root) = WorktreeLeases.read(profile) else { return XCTFail("expected ok") }
+        XCTAssertEqual(root["schemaVersion"] as? Int, 2)
+        XCTAssertEqual(WorktreeLeases.read(profile), .ok(sample()))
+    }
+
+    func testHolderMatchesNormalisedPath() {
+        let root = sample()
+        XCTAssertEqual(WorktreeLeases.holder(of: "/r/.claude/worktrees/wt-one/", in: root), "local_A")
+        XCTAssertEqual(WorktreeLeases.holder(of: "/r/.claude/worktrees/../worktrees/wt-one", in: root), "local_A")
+        XCTAssertNil(WorktreeLeases.holder(of: "/r/other", in: root))
+        XCTAssertNil(WorktreeLeases.holder(of: "/r/.claude/worktrees/wt-one", in: sample(leasedBy: NSNull())))
+    }
+
+    func testAddingCopiesEntryAsAdopted() throws {
+        let source = sample()
+        let entry = try XCTUnwrap(WorktreeLeases.entry(leasedTo: "local_A", path: "/r/.claude/worktrees/wt-one/", in: source))
+        XCTAssertEqual(entry.name, "wt-one")
+        var target = sample(); target["worktrees"] = [String: Any]()
+        let before = NSDictionary(dictionary: target)
+        let out = try WorktreeLeases.adding(entry, for: "local_B", to: target)
+        XCTAssertTrue(before.isEqual(to: target), "input must not change")
+        let wt = try XCTUnwrap((out["worktrees"] as? [String: Any])?["wt-one"] as? [String: Any])
+        XCTAssertEqual(wt["leasedBy"] as? String, "local_B")
+        XCTAssertEqual(wt["adopted"] as? Bool, true)
+        for k in ["leaseCleared", "pooledAt", "parkedStateKey", "uncleanSince"] { XCTAssertNil(wt[k], k) }
+        XCTAssertEqual(wt["baseRepo"] as? String, "/r")
+        XCTAssertEqual(wt["branch"] as? String, "claude/wt-one")
+        XCTAssertEqual(wt["createdAt"] as? Int, 1_700_000_000_000)
+        XCTAssertEqual(wt["autoTrusted"] as? Bool, true)
+        for k in ["originUrls", "originPins", "untrackedDirGc", "schemaVersion"] {
+            XCTAssertTrue(NSDictionary(dictionary: [k: target[k]!]).isEqual(to: [k: out[k]!]), k)
+        }
+    }
+
+    func testAddingRefusesPathLeasedToAnotherSession() throws {
+        let entry = (name: "wt-one", value: try XCTUnwrap((sample()["worktrees"] as? [String: Any])?["wt-one"] as? [String: Any]))
+        // Same path, other name.
+        var other = sample()
+        var wts = try XCTUnwrap(other["worktrees"] as? [String: Any])
+        var e = try XCTUnwrap(wts["wt-one"] as? [String: Any]); e["name"] = "wt-two"
+        wts = ["wt-two": e]; other["worktrees"] = wts
+        XCTAssertThrowsError(try WorktreeLeases.adding(entry, for: "local_B", to: other)) { XCTAssertFalse(($0 as? SwitcherError)?.message.isEmpty ?? true) }
+        // Same name, other path.
+        var e2 = e; e2["path"] = "/elsewhere"
+        other["worktrees"] = ["wt-one": e2]
+        XCTAssertThrowsError(try WorktreeLeases.adding(entry, for: "local_B", to: other))
+    }
+
+    func testAddingIsNoOpWhenAlreadyLeasedToSameSession() throws {
+        let root = sample(leasedBy: "local_B")
+        let entry = (name: "wt-one", value: try XCTUnwrap((root["worktrees"] as? [String: Any])?["wt-one"] as? [String: Any]))
+        let out = try WorktreeLeases.adding(entry, for: "local_B", to: root)
+        XCTAssertTrue(NSDictionary(dictionary: root).isEqual(to: out))
+    }
+
+    func testReleasingClearsLease() throws {
+        let root = sample()
+        let out = WorktreeLeases.releasing(name: "wt-one", from: root)
+        let wt = try XCTUnwrap((out["worktrees"] as? [String: Any])?["wt-one"] as? [String: Any])
+        XCTAssertTrue(wt["leasedBy"] is NSNull)
+        XCTAssertEqual(wt["leaseCleared"] as? Bool, true)
+        XCTAssertEqual(wt["branch"] as? String, "claude/wt-one")
+        XCTAssertEqual((root["worktrees"] as? [String: Any])?["wt-one"].flatMap { ($0 as? [String: Any])?["leasedBy"] as? String }, "local_A")
+        XCTAssertTrue(NSDictionary(dictionary: WorktreeLeases.releasing(name: "nope", from: root)).isEqual(to: root))
+    }
+
+    func testLeasesRefuseUnknownSchema() throws {
+        var v3 = sample(); v3["schemaVersion"] = 3
+        try writeRaw(v3)
+        XCTAssertThrowsError(try WorktreeLeases.write(v3, to: profile))
+        // Root being written is checked too, not only the file on disk.
+        try writeRaw(sample())
+        XCTAssertThrowsError(try WorktreeLeases.write(v3, to: profile))
+        XCTAssertEqual(WorktreeLeases.read(profile), .ok(sample()))
+        try Data("{ nope".utf8).write(to: WorktreeLeases.file(profile))
+        XCTAssertThrowsError(try WorktreeLeases.write(sample(), to: profile))
+    }
+
+    func testLeasesNeverCreateFile() {
+        XCTAssertThrowsError(try WorktreeLeases.write(sample(), to: profile))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: WorktreeLeases.file(profile).path))
+    }
+
+    func testLeasesWriteThroughSymlink() throws {
+        let real = dir.appendingPathComponent("shared-real.json")
+        try JSONSerialization.data(withJSONObject: sample()).write(to: real)
+        try FileManager.default.createSymbolicLink(at: WorktreeLeases.file(profile), withDestinationURL: real)
+        let changed = WorktreeLeases.releasing(name: "wt-one", from: sample())
+        try WorktreeLeases.write(changed, to: profile)
+        XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: WorktreeLeases.file(profile).path))
+        guard case .ok(let root) = WorktreeLeases.read(profile) else { return XCTFail("expected ok") }
+        XCTAssertTrue(NSDictionary(dictionary: root).isEqual(to: changed))
+        let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        XCTAssertTrue(names.contains { $0.hasPrefix("shared-real.json.switcher-backup-") }, "\(names)")
+        let attrs = try FileManager.default.attributesOfItem(atPath: real.path)
+        XCTAssertEqual((attrs[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    }
+}
