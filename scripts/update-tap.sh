@@ -15,15 +15,18 @@ FILE="Casks/claude-profile-switcher.rb"
 grep -q "version \"$VERSION\"" dist/claude-profile-switcher.rb || { echo "dist/claude-profile-switcher.rb is not for $VERSION" >&2; exit 1; }
 
 export GH_TOKEN="$HOMEBREW_TAP_TOKEN"
-# The current file's blob SHA, needed to replace it; empty on the first release.
-SHA=$(gh api "repos/$TAP/contents/$FILE" --jq .sha 2>/dev/null || true)
+# The current file's blob SHA, needed to replace it, and its version; both empty on the first
+# release. For a missing file gh prints the error body on stdout, so only its exit status counts.
+SHA=""
+CURRENT=""
+if gh api "repos/$TAP/contents/$FILE" --silent 2>/dev/null; then
+    SHA=$(gh api "repos/$TAP/contents/$FILE" --jq .sha)
+    CURRENT=$(gh api "repos/$TAP/contents/$FILE" --jq .content | tr -d '\n' | base64 --decode | sed -n 's/^  version "\(.*\)"$/\1/p')
+fi
 # The tap only ever moves forward: an older tag pushed later must not roll users back.
-if [[ -n "$SHA" ]]; then
-    CURRENT=$(gh api "repos/$TAP/contents/$FILE" --jq .content | base64 --decode | sed -n 's/^  version "\(.*\)"$/\1/p')
-    if [[ -n "$CURRENT" ]] && [[ "$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -V | tail -1)" != "$VERSION" || "$CURRENT" == "$VERSION" ]]; then
-        echo "The tap already has $CURRENT; not replacing it with $VERSION." >&2
-        exit 1
-    fi
+if [[ -n "$CURRENT" ]] && [[ "$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -V | tail -1)" != "$VERSION" || "$CURRENT" == "$VERSION" ]]; then
+    echo "The tap already has $CURRENT; not replacing it with $VERSION." >&2
+    exit 1
 fi
 ARGS=(-X PUT "repos/$TAP/contents/$FILE"
       -f "message=claude-profile-switcher $VERSION"
