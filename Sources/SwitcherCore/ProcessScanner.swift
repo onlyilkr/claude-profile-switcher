@@ -18,7 +18,8 @@ public enum ProcessScanner {
     /// copies started from a second Claude.app, a translocated download or a different
     /// spelling of the path all count. Launch Services lists only real app processes, which
     /// leaves out helpers (their own bundle ids) and Claude's binary run as Node
-    /// (ELECTRON_RUN_AS_NODE) for tools. Must be called on the main thread.
+    /// (ELECTRON_RUN_AS_NODE) for tools. Callable from any thread: Launch Services' list is
+    /// thread safe, and it changes only when the main run loop turns.
     public static func claudeInstances(bundleID: String) -> [Instance] {
         let me = getuid()
         var found: [Instance] = []
@@ -65,7 +66,7 @@ public enum ProcessScanner {
         var found: [(pid: pid_t, profileDir: String, cliSessionID: String)] = []
         for pid in pids.prefix(Int(got)) where pid > 0 {
             guard owner(pid: pid) == me, let exe = executablePath(pid: pid), exe.contains("/claude-code/"),
-                  let (args, _) = argsAndEnv(pid: pid),
+                  let args = args(pid: pid),
                   let hit = cliSession(fromArgs: args, executable: exe) else { continue }
             found.append((pid, hit.profileDir, hit.cliSessionID))
         }
@@ -113,6 +114,15 @@ public enum ProcessScanner {
     /// argv and environment of a process of this user, read the way ps does (KERN_PROCARGS2).
     /// Exact strings, so a path with spaces ("Application Support") survives intact.
     public static func argsAndEnv(pid: pid_t) -> (args: [String], env: [String])? {
+        procArgs(pid: pid).flatMap { parseProcArgs($0) }
+    }
+
+    /// The arguments only; the environment (a chat process's may hold credentials) is never decoded.
+    public static func args(pid: pid_t) -> [String]? {
+        procArgs(pid: pid).flatMap { parseProcArgs($0, environment: false)?.args }
+    }
+
+    private static func procArgs(pid: pid_t) -> [UInt8]? {
         var mib: [Int32] = [CTL_KERN, KERN_ARGMAX]
         var argmax: Int32 = 0
         var size = MemoryLayout<Int32>.size
@@ -121,11 +131,12 @@ public enum ProcessScanner {
         mib = [CTL_KERN, KERN_PROCARGS2, pid]
         size = buffer.count
         guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return nil }
-        return parseProcArgs(Array(buffer.prefix(size)))
+        return Array(buffer.prefix(size))
     }
 
     /// Layout: argc (Int32), executable path, NUL padding, argc arguments, environment, empty string.
-    public static func parseProcArgs(_ bytes: [UInt8]) -> (args: [String], env: [String])? {
+    /// With `environment: false` the parse stops after the arguments and `env` is empty.
+    public static func parseProcArgs(_ bytes: [UInt8], environment: Bool = true) -> (args: [String], env: [String])? {
         guard bytes.count >= 4 else { return nil }
         let argc = Int(UInt32(bytes[0]) | UInt32(bytes[1]) << 8 | UInt32(bytes[2]) << 16 | UInt32(bytes[3]) << 24)
         var i = 4
@@ -144,6 +155,7 @@ public enum ProcessScanner {
         var args: [String] = []
         while args.count < argc, let s = next() { args.append(s) }
         guard args.count == argc else { return nil }
+        if !environment { return (args, []) }
         var env: [String] = []
         while let s = next(), !s.isEmpty { env.append(s) }
         return (args, env)

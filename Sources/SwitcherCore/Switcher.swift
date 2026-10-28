@@ -137,7 +137,8 @@ public final class Switcher {
         do {
             guard let plan = PinSync.plan(target: target, source: source, transfer: transfer, targetIDs: targetIDs) else { return }
             try PinSync.apply(plan, to: target, transfer: transfer, openFolders: openFolders)
-            log("Pins synced from '\(source.name)' to '\(target.name)'")
+            let pinned = plan.newPins.filter { !plan.seenPins.contains($0) }.count, unpinned = plan.seenPins.filter { !plan.newPins.contains($0) }.count
+            log("Pins synced from '\(source.name)' to '\(target.name)' (\(pinned) pinned, \(unpinned) unpinned)")
         } catch {
             // Fixed, path-free reasons only: the user-facing messages quote file paths and the log is pasted into bug reports.
             let reason = (error as? SwitcherError)?.logReason ?? Switcher.describe(error)

@@ -419,7 +419,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func linkAll() {
         let jobs = sharedChats.filter(LinkPolicy.isPlainSplit).compactMap { chat in LinkPolicy.winner(of: chat).map { (chat, $0) } }
-        if !jobs.isEmpty { runLinks(jobs) }
+        guard !jobs.isEmpty else {
+            report(L("No chat needs linking right now.", "Şu an bağlanması gereken sohbet yok."))
+            scanSharedChats()
+            return
+        }
+        runLinks(jobs)
     }
 
     /// Closes the accounts that must be closed, links off the main thread, rescans, says what happened
@@ -638,7 +643,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if copied > 0 { scanSharedChats() }
         // Pins follow the chats copied now, in the source's order. A chat that was already
-        // there keeps whatever pin state the user gave it in that account.
+        // there is left alone here; pin sync may change it when the target opens.
         var pinned = 0
         do {
             // Starting accounts count as open, as they do for the linker.

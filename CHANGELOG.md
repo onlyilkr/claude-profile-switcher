@@ -30,7 +30,7 @@ optionally, their worktrees and history in step.
     `backups/transcripts/<time>/<account>/`, never rotated.
   - Sync and Link check the chat again right before they write and refuse with "This chat changed
     since it was checked; refresh and try again." if it moved on. A copy picked to replace in a fork
-    is refused if either copy changed since the scan.
+    is refused if it changed since the scan.
   - Accounts that are open, or still starting, are never written to; the switcher offers to quit and
     reopen them.
   - The switcher keeps a ledger (`links.json`) of what it changed, so Unlink removes exactly that.

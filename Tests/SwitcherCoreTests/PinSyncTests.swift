@@ -222,7 +222,7 @@ final class PinSyncTests: XCTestCase {
         let t = try profile("T", chats: ["local_a", "local_b"], pins: ["local_a"])
         let lines = runLaunchSync(t, s)
         XCTAssertEqual(transfer.pins(of: t), ["local_b", "local_a"])
-        XCTAssertEqual(lines.info, ["Pins synced from 'S' to 'T'"])
+        XCTAssertEqual(lines.info, ["Pins synced from 'S' to 'T' (1 pinned, 0 unpinned)"])
         XCTAssertTrue(lines.errors.isEmpty)
     }
 
