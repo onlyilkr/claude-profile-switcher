@@ -13,6 +13,13 @@ public struct ChatCopy: Equatable {
     public let lastActivity: Date
     /// nil = unknown (no worktree, or the lease file could not be read).
     public let leaseHeld: Bool?
+
+    public init(profileID: String, profileName: String, record: URL, cwd: String, worktreePath: String?, transcript: URL,
+                hasTranscript: Bool, isArchived: Bool, lastActivity: Date, leaseHeld: Bool?) {
+        self.profileID = profileID; self.profileName = profileName; self.record = record; self.cwd = cwd
+        self.worktreePath = worktreePath; self.transcript = transcript; self.hasTranscript = hasTranscript
+        self.isArchived = isArchived; self.lastActivity = lastActivity; self.leaseHeld = leaseHeld
+    }
 }
 
 public enum CopyStatus: Equatable {
@@ -35,6 +42,12 @@ public struct SharedChat: Equatable, Identifiable {
     /// profileID -> status
     public let status: [String: CopyStatus]
     public let isLinked: Bool
+
+    public init(id: String, cliSessionID: String, title: String, folder: String, copies: [ChatCopy],
+                status: [String: CopyStatus], isLinked: Bool) {
+        self.id = id; self.cliSessionID = cliSessionID; self.title = title; self.folder = folder
+        self.copies = copies; self.status = status; self.isLinked = isLinked
+    }
 
     public var diverged: Bool {
         status.values.contains { $0 != .latest }

@@ -57,6 +57,11 @@ public final class LinksLedger {
         if load() == nil { throw unreadable() }
     }
 
+    /// The chats this ledger links (their record ids).
+    public func linkedSessionIDs() -> Set<String> {
+        Set(records().filter { $0.action == "added" }.map(\.sessionID))
+    }
+
     public func isLinked(sessionID: String) -> Bool {
         records().contains { $0.action == "added" && $0.sessionID == sessionID }
     }

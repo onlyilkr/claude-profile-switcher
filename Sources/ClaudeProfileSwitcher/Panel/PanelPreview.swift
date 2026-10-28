@@ -10,6 +10,7 @@ enum PanelPreview {
         _ = NSApplication.shared
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try renderMenuBarIcon(to: dir)
+        try renderSharedChatsWindow(to: dir)
         for (scenario, makeState) in scenarios {
             for (look, name) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
                 let state = makeState()
@@ -51,6 +52,43 @@ enum PanelPreview {
                 try rep.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent("\(scenario)-\(look).png"))
                 window.orderOut(nil)
             }
+        }
+    }
+
+    /// The Shared chats window with linking on: a chat that will split, one that is behind, one linked, one broken.
+    static func renderSharedChatsWindow(to dir: URL) throws {
+        let model = SharedChatsModel()
+        model.linkEnabled = true
+        func copy(_ account: String, archived: Bool = false, lease: Bool? = false) -> ChatCopy {
+            ChatCopy(profileID: account, profileName: account, record: URL(fileURLWithPath: "/r/\(account)"), cwd: "/w/app", worktreePath: "/w/app",
+                     transcript: URL(fileURLWithPath: "/t/\(account)"), hasTranscript: true, isArchived: archived, lastActivity: Date(), leaseHeld: lease)
+        }
+        func chat(_ id: String, _ title: String, _ folder: String, linked: Bool = false, _ status: [(String, CopyStatus)]) -> SharedChat {
+            SharedChat(id: id, cliSessionID: id, title: title, folder: folder, copies: status.map { copy($0.0) },
+                       status: Dictionary(uniqueKeysWithValues: status), isLinked: linked)
+        }
+        model.chats = [
+            chat("a", "Stop recurring price alerts", "sharp-liskov", [("Default", .latest), ("Work", .willSplit)]),
+            chat("b", "Fix the onboarding crash", "calm-turing", [("Default", .latest), ("Work", .behind(messages: 14))]),
+            chat("c", "Refactor the paywall", "kind-hopper", linked: true, [("Default", .latest), ("Work", .latest)]),
+            chat("d", "Migrate the cache layer", "bold-curie", linked: true, [("Default", .latest), ("Work", .linkBroken)]),
+            chat("e", "Rewrite the share sheet", "wise-knuth", linked: true, [("Default", .latest), ("Work", .archivedHereOnly)]),
+        ]
+        for (look, name) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+            let host = NSHostingView(rootView: SharedChatsView(model: model).frame(width: 560, height: 640).background(Color(nsColor: .windowBackgroundColor)))
+            host.appearance = NSAppearance(named: name)
+            host.frame = NSRect(x: 0, y: 0, width: 560, height: 640)
+            let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: name)
+            window.contentView = host
+            window.setFrameOrigin(NSPoint(x: -4000, y: -4000))
+            window.makeKeyAndOrderFront(nil)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+            host.layoutSubtreeIfNeeded()
+            guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { continue }
+            host.cacheDisplay(in: host.bounds, to: rep)
+            try rep.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent("shared-chats-window-\(look).png"))
+            window.orderOut(nil)
         }
     }
 
@@ -106,6 +144,13 @@ enum PanelPreview {
             ]
             s.divergedChats = 2
             s.divergedChatIDs = ["local_a", "local_b"]
+            return s
+        }),
+        ("link-setting", {
+            let s = base()
+            s.rows = [row(Profile.defaultID, .open, last: 0, session: 38), row("Work", .closed, color: 0, last: 3600, session: 20)]
+            s.claudeVersion = "4.30.1"
+            s.linkChats = true
             return s
         }),
         ("first-run", {

@@ -410,11 +410,28 @@ struct SettingsSection: View {
                     .fixedSize()
                 }
             }
+            if state.rows.count > 1 || state.linkChats {
+                ToggleRow(title: L("Keep worktree chats linked across accounts (experimental)", "Worktree sohbetlerini hesaplar arasında bağlı tut (deneysel)"),
+                          detail: linkDetail,
+                          isOn: Binding(get: { state.linkChats }, set: { state.actions.setLinkChats($0) }))
+            }
             ToggleRow(title: L("Open at login", "Oturum açılışında başlat"), detail: nil,
                       isOn: Binding(get: { state.loginItem }, set: { state.actions.setLogin($0) }))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+}
+
+private extension SettingsSection {
+    var linkDetail: String {
+        var text = L("Same folder and history in every account. Don't use a chat in two accounts at once; deleting it deletes its history everywhere; archive it in every account together. Tried with Claude \(LinkPolicy.testedVersion).",
+                     "Her hesapta aynı klasör ve geçmiş. Bir sohbeti iki hesapta aynı anda kullanmayın; silmek geçmişi her yerde siler; arşivlemeyi bütün hesaplarda birlikte yapın. Claude \(LinkPolicy.testedVersion) ile denendi.")
+        if !state.claudeVersion.isEmpty, !LinkPolicy.isTested(state.claudeVersion) {
+            let v = LinkPolicy.shortVersion(state.claudeVersion)
+            text += "\n" + L("Not yet tried with Claude \(v)", "Claude \(v) ile henüz denenmedi")
+        }
+        return text
     }
 }
 

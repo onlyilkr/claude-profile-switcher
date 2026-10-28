@@ -3,15 +3,17 @@ import SwitcherCore
 
 /// How one account's copy of a chat reads, in the app's language (English on the command line).
 enum SharedChatsText {
-    static func status(_ s: CopyStatus) -> String {
+    static func status(_ s: CopyStatus, linked: Bool = false) -> String {
         switch s {
-        case .latest: return L("up to date", "güncel")
+        case .latest: return linked ? L("linked, up to date", "bağlı, güncel") : L("up to date", "güncel")
         case .behind(let n): return L("\(n) messages behind", "\(n) mesaj geride")
         case .forked(let n): return L("forked, \(n) messages of its own", "çatallanmış, kendine ait \(n) mesaj")
         case .noTranscript: return L("no history", "geçmiş yok")
         case .willSplit: return L("same history, but will split when resumed here", "aynı geçmiş, ama burada sürdürülünce ayrışacak")
-        // Worded properly with the linking feature; neutral until then.
-        case .linkBroken, .archivedHereOnly: return L("needs attention", "dikkat gerekiyor")
+        case .linkBroken: return L("linked, but Claude moved it again", "bağlı, ama Claude yine taşıdı")
+        case .archivedHereOnly:
+            return L("linked, archived only here — Claude in this account may give its folder to another chat; archive it in every account or unarchive it here",
+                     "bağlı, yalnızca burada arşivli — bu hesaptaki Claude klasörünü başka bir sohbete verebilir; her hesapta arşivleyin ya da burada arşivden çıkarın")
         }
     }
 
@@ -24,8 +26,16 @@ enum SharedChatsText {
 final class SharedChatsModel: ObservableObject {
     @Published var chats: [SharedChat] = []
     @Published var loading = false
+    /// The experimental linking setting; Sync and Link only show while it is on.
+    @Published var linkEnabled = false
+    /// A link or unlink is running.
+    @Published var busy = false
     var refresh: () -> Void = {}
     var openAccount: (String) -> Void = { _ in }
+    var sync: (SharedChat) -> Void = { _ in }
+    var link: (SharedChat) -> Void = { _ in }
+    var unlink: (SharedChat) -> Void = { _ in }
+    var linkAll: () -> Void = {}
 }
 
 /// Chats that exist in more than one account, and how far each account's copy has got.
@@ -37,7 +47,10 @@ struct SharedChatsView: View {
             HStack {
                 Text(L("Chats in more than one account", "Birden fazla hesapta olan sohbetler")).font(.headline)
                 Spacer()
-                if model.loading { ProgressView().controlSize(.small) }
+                if model.loading || model.busy { ProgressView().controlSize(.small) }
+                if model.linkEnabled, model.chats.contains(where: LinkPolicy.needsLinking) {
+                    Button(L("Link all", "Tümünü bağla")) { model.linkAll() }.disabled(model.busy)
+                }
                 Button(L("Refresh", "Yenile")) { model.refresh() }.disabled(model.loading)
             }
             if model.chats.isEmpty {
@@ -48,7 +61,7 @@ struct SharedChatsView: View {
                 ScrollView {
                     VStack(spacing: 8) {
                         ForEach(model.chats) { chat in
-                            SharedChatRow(chat: chat, openAccount: model.openAccount)
+                            SharedChatRow(chat: chat, model: model)
                         }
                     }
                 }
@@ -61,7 +74,7 @@ struct SharedChatsView: View {
 
 private struct SharedChatRow: View {
     let chat: SharedChat
-    let openAccount: (String) -> Void
+    let model: SharedChatsModel
     @State private var opened = false
 
     var body: some View {
@@ -78,7 +91,7 @@ private struct SharedChatRow: View {
                         .foregroundStyle(status == .latest ? Color.green : Color.orange)
                         .font(.system(size: 11))
                     Text(copy.profileName).font(.system(size: 12))
-                    Text(SharedChatsText.status(status)).font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text(SharedChatsText.status(status, linked: chat.isLinked)).font(.system(size: 12)).foregroundStyle(.secondary)
                     Spacer(minLength: 0)
                 }
             }
@@ -86,7 +99,7 @@ private struct SharedChatRow: View {
                 HStack {
                     Button(L("Open where it's up to date", "En güncel olduğu hesapta aç")) {
                         opened = true
-                        openAccount(best.profileID)
+                        model.openAccount(best.profileID)
                     }
                     if opened {
                         Text(L("Open '\(chat.title)' in this account", "Bu hesapta '\(chat.title)' sohbetini açın"))
@@ -96,9 +109,28 @@ private struct SharedChatRow: View {
                 }
                 .padding(.top, 2)
             }
+            actions
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(chat.diverged ? 0.08 : 0.04)))
+    }
+}
+
+
+private extension SharedChatRow {
+    /// Sync for a copy that is behind or forked, Link for one that would split, Unlink once linked.
+    @ViewBuilder var actions: some View {
+        let sync = model.linkEnabled && (LinkPolicy.isBehind(chat) || LinkPolicy.isForked(chat))
+        let link = model.linkEnabled && !sync && !chat.isLinked && LinkPolicy.needsLinking(chat)
+        if sync || link || chat.isLinked {
+            HStack {
+                if sync { Button(L("Sync", "Eşitle")) { model.sync(chat) } }
+                if link { Button(L("Link", "Bağla")) { model.link(chat) } }
+                if chat.isLinked { Button(L("Unlink", "Bağlantıyı kaldır")) { model.unlink(chat) } }
+            }
+            .disabled(model.busy)
+            .padding(.top, 2)
+        }
     }
 }
