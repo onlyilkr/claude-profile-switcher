@@ -4,8 +4,8 @@ import XCTest
 final class SharedChatsTests: XCTestCase {
     func testProjectDirNameMatchesClaude() {
         XCTAssertEqual(
-            TranscriptLocator.projectDirName(for: "/Users/ilkerguldali/workspace/halal-backend/.claude/worktrees/sharp-liskov-9f53ee"),
-            "-Users-ilkerguldali-workspace-halal-backend--claude-worktrees-sharp-liskov-9f53ee")
+            TranscriptLocator.projectDirName(for: "/Users/a/workspace/shop-backend/.claude/worktrees/sharp-liskov-9f53ee"),
+            "-Users-a-workspace-shop-backend--claude-worktrees-sharp-liskov-9f53ee")
         // Every non-alphanumeric UTF-16 unit becomes "-" (after NFC), so letters like Ğ, ü, ş and the space are replaced.
         XCTAssertEqual(TranscriptLocator.projectDirName(for: "/Users/a/Proje Ğüş"), "-Users-a-Proje----")
         // A character outside the BMP is two UTF-16 units, so it gives two dashes.
