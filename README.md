@@ -40,6 +40,7 @@
 - [Usage limits](#usage-limits)
 - [Signing in from the browser](#signing-in-from-the-browser)
 - [Moving Claude Code chats between accounts](#moving-claude-code-chats-between-accounts)
+- [Shared chats](#shared-chats)
 - [Launchers](#launchers)
 - [Command line](#command-line)
 - [Configuration](#configuration)
@@ -103,6 +104,7 @@ Three things about Claude on macOS shape the design (as observed with Claude Des
 | **Add an account in one click** | A fresh profile opens Claude at its sign-in screen. Sign in and you are done. |
 | **Sign-ins land in the right account** | Optional: browser sign-ins (Google, email links) go to the account that asked, not to whichever Claude macOS picks. |
 | **Move Claude Code chats** | Copy chats to another account and carry on there, with the rules of [claude-migrate](https://github.com/onlyilkr/claude-migrate). Pins come along, in order. |
+| **Shared chats** | See which chats exist in several accounts and whether one copy is behind. Optional and experimental: keep worktree chats linked so both accounts continue one history. |
 | **Launchers** | `Claude - Work.app` in `~/Applications` with a coloured badge, for Spotlight, Launchpad and the Dock. |
 | **Per-account environment** | Environment variables and launch flags for one account's Claude, for example for an MCP server. |
 | **Your original stays put** | The account you already have keeps its folder, auto update and settings. The switcher only writes there when you transfer chats into it. |
@@ -270,9 +272,101 @@ Safety rules, the same as [claude-migrate](https://github.com/onlyilkr/claude-mi
   (`claude_desktop_config.json.switcher-backup-<time>`, the newest five). A symlinked file is written
   through the link, so a shared config stays shared.
 
-The chat stays in the source account too. Both copies continue the same history, so finish in one
-account before picking it up in the other. Commit work in a chat's worktree before moving it: Claude
-may recycle an idle worktree, and uncommitted files are not carried to the new one.
+The chat stays in the source account too. A chat that does not use a git worktree has one history
+file under `~/.claude/projects`, so both accounts continue the same history: finish in one account
+before picking it up in the other. A chat that runs in a worktree is different. Claude moves it to a
+new worktree when you continue it in the other account, and from then on the two accounts keep two
+separate histories, unless you link the chat. See [Shared chats](#shared-chats). Commit work in a
+chat's worktree before moving it: uncommitted files are not carried to the new one.
+
+If the target account already has the chat, the summary says so, and when that copy is behind it
+says how far ("already in 'Work', but 635 messages behind - don't continue it there") instead of just
+"already there". Before you copy a worktree chat, it asks you to confirm.
+
+## Shared chats
+
+Once a chat exists in two accounts, the two copies can drift apart. The switcher finds those chats,
+shows how each copy compares, and, if you turn it on, can keep worktree chats on one history.
+
+### What you see
+
+- **A note in the panel**, under the account list, when some chats differ between accounts: "N chats
+  differ between accounts" with **Show**. The cross (x) hides it until the set of differing chats
+  changes.
+- **The Shared chats window**, from **Show** or from the transfer summary. It lists every chat that
+  exists in more than one account, most recent first, with the title, its folder and one status per
+  account:
+  - *up to date*
+  - *N messages behind*
+  - *forked, N messages of its own*: both copies have messages the other lacks
+  - *no history*: the record is there but the history file is not on this Mac
+  - *same history, but will split when resumed here*: a worktree chat both accounts still share one
+    file for. Continuing it in that account will make Claude start a separate copy.
+  - *linked, up to date*, *linked, but Claude moved it again*, and *linked, archived only here*
+  
+  **Open where it's up to date** opens the account that has the newest copy.
+- **`claude-profiles --shared-chats`** prints the same list.
+
+Only local Code chats are covered. The switcher counts messages by reading the history files; it never
+changes them in this mode, and nothing it reads leaves your Mac.
+
+### Linking worktree chats (experimental, off by default)
+
+Claude moves a worktree chat to a new worktree when you continue it in a second account, and copies
+the history there. Linking prevents that: the switcher makes both accounts point at the same worktree
+and the same history file, so there is one chat instead of two.
+
+Turn it on with **Keep worktree chats linked across accounts (experimental)** in the panel (it shows
+when you have more than one account). It was tried with Claude 4.29; with another version the panel
+says so. Nothing is linked until you ask:
+
+| Button | Does |
+| --- | --- |
+| **Sync** | For a chat that is behind or forked: keep the newer copy (for a fork you pick which), and make the other account use it. The out-of-date history is moved to the switcher's backups, never deleted. The other account's own record of the chat is replaced, keeping its archived and pinned state. |
+| **Link** | For a chat that is still on one history but would split: tell the other account about the worktree so Claude keeps using it. |
+| **Link all** | Link every such chat. |
+| **Unlink** | Undo the link for one chat. |
+
+With linking on, a transfer of a worktree chat links it right away. If it cannot (for example the
+target account has no worktree list yet, because Claude has not made one there), the chat is still
+copied and the window says why.
+
+The account that gets the other copy's history must be closed, and no account may be running that
+chat. If one is open, the switcher asks **Quit and sync**, then opens it again afterwards.
+
+#### Limits you should know
+
+- **Experimental.** It relies on how Claude 4.29 behaved when tried. A later Claude may behave
+  differently. If the switcher sees a linked chat that Claude moved again, it turns linking off and
+  says so; it does not unlink anything.
+- **Never open a linked chat in two accounts at once.** Both would write to one history file and it
+  would branch. Claude keeps an idle chat's process for up to 30 minutes, so closing the window is not
+  enough: wait, or quit that account. The panel warns when it sees a linked chat running in two
+  accounts.
+- **Deleting a linked chat in one account deletes its history in both.** There is only one file.
+- **Archive in every account together.** If a linked chat is archived in only one account, that
+  account's Claude may give the worktree to another chat. The window marks such a chat.
+- **It only handles chats it can understand.** If an account's worktree list is missing, unreadable or
+  in an unfamiliar format, the switcher leaves it alone and says why. It never creates that file.
+
+#### Undoing it
+
+**Unlink** (one chat), **Remove links** when you turn the setting off, or
+`claude-profiles --unlink-chats` (all chats) remove what the switcher added. It keeps a list of what it
+wrote in `links.json` in its settings folder and removes an entry only if it is still as the switcher
+left it; changed ones are skipped and reported. Open accounts are skipped too.
+
+After unlinking, a chat goes back to the behaviour described above. Undo does not restore a
+worktree that an account had before linking: Claude may have reused it in the meantime. It does not
+move a history file back from the backups either.
+
+#### Backups
+
+- Before it changes a file of Claude's, the switcher saves a dated copy next to it
+  (`<file>.switcher-backup-<time>`, the newest five).
+- A history that Sync replaces is moved to
+  `~/Library/Application Support/Claude Profile Switcher/backups/transcripts/<time>/<account>/`.
+  History files are never deleted by the switcher.
 
 ## Launchers
 
@@ -302,6 +396,8 @@ alias claude-profiles="/Applications/Claude\ Profile\ Switcher.app/Contents/MacO
 | `claude-profiles --status` | Sign-in routing state, who opens `claude://` now, and which open accounts are signed in |
 | `claude-profiles --route-sign-ins` | Turn sign-in routing on |
 | `claude-profiles --revert` | Turn it off and give `claude://` back to Claude |
+| `claude-profiles --shared-chats` | Chats that exist in several accounts and how each copy compares |
+| `claude-profiles --unlink-chats` | Remove every link the switcher made between accounts' worktree chats (open accounts are skipped) |
 | `claude-profiles --open-link <url> --account Work` | Open a `claude://` link in a chosen account |
 | `claude-profiles --open-links-in Work` | Where links that are not sign-ins go while routing is on; `Default` undoes it |
 | `claude-profiles --claude-path <Claude.app>` | Use a Claude installed somewhere unusual (remembered) |
@@ -335,6 +431,7 @@ writes most of them; two are for hand editing:
 | `Labels`, `Colors` | Display names and badge colours, set from the panel. |
 | `SignInRouting`, `OpenLinksIn`, `RouterBackup` | Sign-in routing state. |
 | `ClaudePath` | Set by `--claude-path`. |
+| `LinkWorktreeChats` | `true` when worktree chat linking is on; absent means off. Set from the panel. |
 
 If `settings.json` stops being valid JSON after a hand edit, the switcher stops saving anything and
 says so in the panel, instead of replacing the file and losing your other settings.
@@ -354,6 +451,7 @@ Claude is closed.
 | Switcher settings and logs | `~/Library/Application Support/Claude Profile Switcher/` |
 | Launchers | `~/Applications/Claude - <name>.app` |
 | Claude Code transcripts | `~/.claude/projects`, shared by all accounts |
+| Link list and backups of replaced transcripts | `~/Library/Application Support/Claude Profile Switcher/links.json` and `backups/transcripts/` |
 
 A profile's folder name is its permanent id: Claude stores absolute paths inside its data, so
 renaming changes only the label.
@@ -361,14 +459,14 @@ renaming changes only the label.
 ## Safety and privacy
 
 - **Your original account's folder is left alone.** It is read for signed-in state, last use and usage, and
-  written only when you transfer chats into it (new chat records and the pin list).
+  written only when you transfer chats into it (new chat records and the pin list), or, with linking turned on, when you press Sync or Link.
 - **One copy per profile.** Every launch checks which data folders are open first.
 - **Deleting moves to the Trash**, only for folders named `ClaudeProfile-<id>` directly under Application
   Support, and never while that account's Claude is open.
 - **Chat transfer is additive** and never runs while the target is open; see above.
 - **No tokens or cookies are used.** Signed-in state comes from `config.json`: the signed-in flag, the id
   of the account last signed in, and the length of the token cache, which is never stored, logged or
-  sent. Chat records are read to list and copy them; transcripts are never opened.
+  sent. Chat records are read to list and copy them. Transcripts are read only to compare the copies of a shared chat (counting messages); their text is never stored, logged or sent.
 - **Links are validated**: only `claude://` followed by ordinary URL characters, up to 2048 of them.
   The switcher's own `claudeprofileswitcher://` links can only open an existing profile.
 - **No network access**, no analytics, no updater. The only thing that leaves your Mac is what Claude
@@ -392,6 +490,7 @@ See [SECURITY.md](SECURITY.md) for the full list of what the app touches and how
 - Usage numbers are only as fresh as each account's last measurement, and have no reset times.
 - Only the desktop app changes account. The `claude` command line in Terminal keeps its own login; give
   it per-account settings with the `CLAUDE_CONFIG_DIR` environment variable.
+- Linked worktree chats are experimental and must not be open in two accounts at once; see [Shared chats](#shared-chats).
 - Everything here relies on undocumented Claude behaviour that an update can change. Features stop
   rather than damage data when something looks unfamiliar.
 
@@ -462,6 +561,16 @@ to measure again.
 
 Install Claude from [claude.ai/download](https://claude.ai/download), or point the switcher at it once:
 `claude-profiles --claude-path "/path/to/Claude.app"`.
+</details>
+
+<details>
+<summary><b>A chat is behind in the other account</b></summary>
+
+The two accounts have separate copies of the chat's history, usually because Claude moved it to a new
+worktree when it was continued in the second account. Do not continue from the older copy. Open
+**Show** in the panel note (or run `claude-profiles --shared-chats`) to see which copy is newest, and
+open the chat there. To make both accounts use the newest copy, turn on the experimental linking and
+press **Sync**; read [Shared chats](#shared-chats) first.
 </details>
 
 ## Uninstall
