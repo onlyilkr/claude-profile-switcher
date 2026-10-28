@@ -38,6 +38,17 @@ public struct ChatLinker {
         return openFolders().contains { ChatLinker.canonical($0) == mine }
     }
 
+    /// The same file or folder: equal after resolving symlinks, or (both existing) the same device and inode,
+    /// which also catches a different spelling of the same folder on a case-insensitive volume.
+    static func sameItem(_ a: URL, _ b: URL) -> Bool {
+        if a.resolvingSymlinksInPath().standardizedFileURL.path == b.resolvingSymlinksInPath().standardizedFileURL.path { return true }
+        let fm = FileManager.default
+        guard let x = try? fm.attributesOfItem(atPath: a.path), let y = try? fm.attributesOfItem(atPath: b.path),
+              let xi = x[.systemFileNumber] as? NSNumber, let yi = y[.systemFileNumber] as? NSNumber,
+              let xd = x[.systemNumber] as? NSNumber, let yd = y[.systemNumber] as? NSNumber else { return false }
+        return xi == yi && xd == yd
+    }
+
     private static func norm(_ path: String) -> String {
         var p = URL(fileURLWithPath: path).standardizedFileURL.path
         while p.count > 1 && p.hasSuffix("/") { p.removeLast() }
@@ -70,7 +81,7 @@ public struct ChatLinker {
     private func diff(profile: Profile, session: String, before: [String: Any], after: [String: Any], released: [String], added: String?) -> [LinkRecord] {
         let old = ChatLinker.entries(before), new = ChatLinker.entries(after)
         var out: [LinkRecord] = []
-        let now = Date()
+        let now = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))   // the ledger stores whole seconds; keeps in-memory records equal to stored ones
         for name in released {
             guard let w = new[name], let written = ChatLinker.json(w) else { continue }
             out.append(LinkRecord(profileID: profile.id, entryName: name, action: "released", previous: old[name].flatMap(ChatLinker.json),
@@ -140,6 +151,7 @@ public struct ChatLinker {
                 if case .ok(let r) = read { loserRoot = r }
             }
             let sameCwd = ChatLinker.norm(copy.cwd) == ChatLinker.norm(win.cwd)
+                || ChatLinker.sameItem(URL(fileURLWithPath: copy.cwd), URL(fileURLWithPath: win.cwd))
             let held = winnerPath == nil || loserRoot.map { WorktreeLeases.holder(of: winnerPath!, in: $0) == chat.id } == true
             let already = sameCwd && held
             if !already && !win.hasTranscript {
@@ -155,6 +167,10 @@ public struct ChatLinker {
                 if isOpen(plan.profile) {
                     report.skipped[plan.profile.id] = L("Claude is open in this account. Quit it and try again.", "Bu hesapta Claude açık. Kapatıp tekrar deneyin."); continue
                 }
+                if live().contains(where: { $0.cliSessionID == chat.cliSessionID }) {
+                    report.skipped[plan.profile.id] = L("This chat is still running in Claude. Quit Claude in every account and try again.",
+                                                        "Bu sohbet Claude'da hâlâ çalışıyor. Tüm hesaplarda Claude'u kapatıp tekrar deneyin."); continue
+                }
                 try apply(plan, chat: chat, win: win, winnerRaw: winnerRaw, winnerEntry: winnerEntry, transfer: transfer)
                 report.linked.append(plan.profile.id)
             } catch {
@@ -166,8 +182,13 @@ public struct ChatLinker {
 
     private func apply(_ plan: Plan, chat: SharedChat, win: ChatCopy, winnerRaw: [String: Any],
                        winnerEntry: (name: String, value: [String: Any])?, transfer: ChatTransfer) throws {
+        // 0. A ledger that can't be read means nothing is written for this account.
+        try ledger.ensureReadable()
         // 1. Lease steps (the step that can be refused because Claude changed the file; nothing
-        //    else has been touched yet).
+        //    else has been touched yet). The ledger entries go in first: a record for a change
+        //    that never landed is harmless, an unrecorded change is not.
+        var leaseUndo: (original: [String: Any], written: [String: Any])?
+        var records: [LinkRecord] = []
         if let winnerEntry, let winnerPath = win.worktreePath, let original = plan.loserRoot {
             var root = original
             var released: [String] = []
@@ -180,21 +201,39 @@ public struct ChatLinker {
             }
             root = try WorktreeLeases.adding(winnerEntry, for: chat.id, to: root)
             if !NSDictionary(dictionary: root).isEqual(to: original) {
-                try WorktreeLeases.write(root, basedOn: original, to: plan.profile)
-                let records = diff(profile: plan.profile, session: chat.id, before: original, after: root, released: released, added: winnerEntry.name)
+                records = diff(profile: plan.profile, session: chat.id, before: original, after: root, released: released, added: winnerEntry.name)
                 if !records.isEmpty { try ledger.append(records) }
+                do { try WorktreeLeases.write(root, basedOn: original, to: plan.profile) } catch {
+                    try? ledger.remove(where: { records.contains($0) })
+                    throw error
+                }
+                leaseUndo = (original, root)
             }
         }
         // 2. Record: the winner's, keeping this account's own archive and star state.
-        var new = ChatTransfer.transform(winnerRaw)
-        for key in ["isArchived", "isStarred"] {
-            if let v = plan.loserRaw[key] { new[key] = v } else { new.removeValue(forKey: key) }
+        do {
+            var new = ChatTransfer.transform(winnerRaw)
+            for key in ["isArchived", "isStarred"] {
+                if let v = plan.loserRaw[key] { new[key] = v } else { new.removeValue(forKey: key) }
+            }
+            let data = try JSONSerialization.data(withJSONObject: new, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+            try writeRecord(data, to: plan.copy.record)
+        } catch {
+            // Put the lease file back as it was, so the account is not left half linked.
+            var note = ""
+            if let undo = leaseUndo {
+                do { try WorktreeLeases.write(undo.original, basedOn: undo.written, to: plan.profile) } catch {
+                    note = " " + L("The worktree list could not be restored; Undo linking will remove the added entry.",
+                                   "Worktree listesi geri yüklenemedi; Bağı kaldır eklenen girişi silecek.")
+                    throw SwitcherError(error.localizedDescription + note)
+                }
+                try? ledger.remove(where: { records.contains($0) })
+            }
+            throw error
         }
-        let data = try JSONSerialization.data(withJSONObject: new, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-        try writeRecord(data, to: plan.copy.record)
         // 3. History: this account's own copy goes to the backup folder, never deleted, and only
-        //    when it is not the file the winner uses.
-        if plan.copy.transcript.resolvingSymlinksInPath().standardizedFileURL != win.transcript.resolvingSymlinksInPath().standardizedFileURL {
+        //    when it is not the file the winner uses (same path or same device and inode).
+        if !ChatLinker.sameItem(plan.copy.transcript, win.transcript) {
             try moveToBackup(plan.copy, cli: chat.cliSessionID, profileID: plan.profile.id)
         }
     }
@@ -238,20 +277,24 @@ public struct ChatLinker {
         guard let path = session.worktreePath else { return nil }
         let id = "local_" + session.sessionID
         if isOpen(to) { return L("Claude is open in this account. Quit it and try again.", "Bu hesapta Claude açık. Kapatıp tekrar deneyin.") }
-        let source = WorktreeLeases.read(from)
-        if let why = ChatLinker.leaseProblem(source) { return why }
-        guard case .ok(let sroot) = source, let entry = WorktreeLeases.entry(leasedTo: id, path: path, in: sroot) else {
-            return L("The source account doesn't hold the worktree lease for this chat.", "Kaynak hesap bu sohbet için worktree kirasını tutmuyor.")
+        let notInSource = L("This chat's worktree isn't in '\(from.name)'s worktree list, so it was copied without linking.",
+                            "Bu sohbetin worktree'si '\(from.name)' hesabının worktree listesinde yok; bağlanmadan kopyalandı.")
+        guard case .ok(let sroot) = WorktreeLeases.read(from), let entry = WorktreeLeases.entry(leasedTo: id, path: path, in: sroot) else {
+            return notInSource
         }
         let target = WorktreeLeases.read(to)
         if let why = ChatLinker.leaseProblem(target) { return why }
-        guard case .ok(let original) = target else { return nil }
+        guard case .ok(let original) = target else { return ChatLinker.leaseProblem(target) }
         do {
             let root = try WorktreeLeases.adding(entry, for: id, to: original)
             if NSDictionary(dictionary: root).isEqual(to: original) { return nil }
-            try WorktreeLeases.write(root, basedOn: original, to: to)
+            try ledger.ensureReadable()
             let records = diff(profile: to, session: id, before: original, after: root, released: [], added: entry.name)
             if !records.isEmpty { try ledger.append(records) }
+            do { try WorktreeLeases.write(root, basedOn: original, to: to) } catch {
+                try? ledger.remove(where: { records.contains($0) })
+                throw error
+            }
             return nil
         } catch {
             return error.localizedDescription

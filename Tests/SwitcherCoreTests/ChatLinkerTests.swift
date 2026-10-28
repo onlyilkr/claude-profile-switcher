@@ -22,7 +22,10 @@ final class ChatLinkerTests: XCTestCase {
         openNow = []; liveNow = []
     }
 
-    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: home) }
+    override func tearDownWithError() throws {
+        for d in [recordURL(win), recordURL(lose)] { chmod(d.deletingLastPathComponent().path, 0o700) }
+        try? FileManager.default.removeItem(at: home)
+    }
 
     // MARK: fixtures
 
@@ -283,5 +286,81 @@ final class ChatLinkerTests: XCTestCase {
         XCTAssertNotNil(try worktrees(lose)["wt-lose"])   // released lease is not restored
         XCTAssertTrue(ledger().records().isEmpty)
         XCTAssertFalse(ledger().isLinked(sessionID: chatID))
+    }
+
+    // MARK: fix round 1
+
+    func testLedgerFailureWritesNothing() throws {
+        try diverged()
+        let c = try chat()
+        try FileManager.default.createDirectory(at: paths.switcherHome, withIntermediateDirectories: true)
+        try "not json".write(to: paths.switcherHome.appendingPathComponent("links.json"), atomically: true, encoding: .utf8)
+        let leaseBefore = try Data(contentsOf: WorktreeLeases.file(lose)), recBefore = try Data(contentsOf: recordURL(lose))
+        let report = try linker().link(c, winner: "Default", profiles: [win, lose])
+        XCTAssertEqual(report.linked, [])
+        XCTAssertNotNil(report.skipped["Two"])
+        XCTAssertEqual(try Data(contentsOf: WorktreeLeases.file(lose)), leaseBefore)
+        XCTAssertEqual(try Data(contentsOf: recordURL(lose)), recBefore)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: transcript(loseCwd).path))
+        XCTAssertEqual(try String(contentsOf: paths.switcherHome.appendingPathComponent("links.json")), "not json")
+    }
+
+    func testRecordFailureRollsBackLease() throws {
+        try diverged()
+        let c = try chat()
+        let leaseBefore = try Data(contentsOf: WorktreeLeases.file(lose))
+        chmod(recordURL(lose).deletingLastPathComponent().path, 0o500)
+        let report = try linker().link(c, winner: "Default", profiles: [win, lose])
+        chmod(recordURL(lose).deletingLastPathComponent().path, 0o700)
+        XCTAssertEqual(report.linked, [])
+        XCTAssertNotNil(report.skipped["Two"])
+        XCTAssertTrue(NSDictionary(dictionary: try obj(WorktreeLeases.file(lose))).isEqual(to: try XCTUnwrap(JSONSerialization.jsonObject(with: leaseBefore) as? [String: Any])))
+        XCTAssertTrue(ledger().records().isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: transcript(loseCwd).path))
+        XCTAssertEqual(try obj(recordURL(lose))["cwd"] as? String, loseCwd)
+    }
+
+    func testCaseDifferentWinnerPathIsNotMoved() throws {
+        let wcwd = home.path + "/proj/wt-win", lcwd = home.path + "/PROJ/wt-win"
+        try FileManager.default.createDirectory(atPath: wcwd, withIntermediateDirectories: true)
+        guard FileManager.default.fileExists(atPath: lcwd) else { throw XCTSkip("case-sensitive volume") }
+        try writeJSON(record(cwd: wcwd), recordURL(win))
+        try writeJSON(record(cwd: lcwd), recordURL(lose))
+        try writeJSON(leaseFile(["wt-win": lease(wcwd, name: "wt-win", by: chatID)]), WorktreeLeases.file(win))
+        try writeJSON(leaseFile([:]), WorktreeLeases.file(lose))
+        let url = transcript(wcwd)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "{\"a\":1}\n".write(to: url, atomically: true, encoding: .utf8)
+        let before = try Data(contentsOf: url)
+        let report = try linker().link(try chat(), winner: "Default", profiles: [win, lose])
+        XCTAssertEqual(report.linked, ["Two"])
+        XCTAssertEqual(try Data(contentsOf: url), before)
+        XCTAssertTrue(backupFiles().isEmpty)
+    }
+
+    func testLinkRefusesLeaseHeldByAnotherChat() throws {
+        try diverged()
+        let c = try chat()
+        try writeJSON(leaseFile(["wt-lose": lease(loseCwd, name: "wt-lose", by: chatID),
+                                 "wt-win": lease(winCwd, name: "wt-win", by: "local_zzzz")]), WorktreeLeases.file(lose))
+        let leaseBefore = try Data(contentsOf: WorktreeLeases.file(lose))
+        let report = try linker().link(c, winner: "Default", profiles: [win, lose])
+        XCTAssertEqual(report.linked, [])
+        XCTAssertNotNil(report.skipped["Two"])
+        XCTAssertEqual(try Data(contentsOf: WorktreeLeases.file(lose)), leaseBefore)
+        XCTAssertEqual(try obj(recordURL(lose))["cwd"] as? String, loseCwd)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: transcript(loseCwd).path))
+        XCTAssertTrue(ledger().records().isEmpty)
+    }
+
+    func testLinkSkipsCliSessionMismatch() throws {
+        try diverged()
+        let c = try chat()
+        try writeJSON(record(cwd: loseCwd, extra: ["cliSessionId": "other-cli"]), recordURL(lose))
+        let report = try linker().link(c, winner: "Default", profiles: [win, lose])
+        XCTAssertEqual(report.linked, [])
+        XCTAssertNotNil(report.skipped["Two"])
+        XCTAssertEqual(try obj(recordURL(lose))["cwd"] as? String, loseCwd)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: transcript(loseCwd).path))
     }
 }

@@ -51,6 +51,12 @@ public final class LinksLedger {
         try save(existing.filter { !match($0) })
     }
 
+    /// Throws when links.json exists but can't be read, so callers can refuse before writing anything.
+    public func ensureReadable() throws {
+        lock.lock(); defer { lock.unlock() }
+        if load() == nil { throw unreadable() }
+    }
+
     public func isLinked(sessionID: String) -> Bool {
         records().contains { $0.action == "added" && $0.sessionID == sessionID }
     }
