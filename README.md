@@ -281,7 +281,8 @@ chat's worktree before moving it: uncommitted files are not carried to the new o
 
 If the target account already has the chat, the summary says so, and when that copy is behind it
 says how far ("already in 'Work', but 635 messages behind - don't continue it there") instead of just
-"already there". Before you copy a worktree chat, it asks you to confirm.
+"already there". With linking off, it also asks you to confirm before you copy a worktree chat; with
+linking on, the transfer links the chat instead.
 
 ## Shared chats
 
@@ -322,8 +323,8 @@ says so. Nothing is linked until you ask:
 
 | Button | Does |
 | --- | --- |
-| **Sync** | For a chat that is behind or forked: keep the newer copy (for a fork you pick which), and make the other account use it. The out-of-date history is moved to the switcher's backups, never deleted. The other account's own record of the chat is replaced, keeping its archived and pinned state. |
-| **Link** | For a chat that is still on one history but would split: tell the other account about the worktree so Claude keeps using it. |
+| **Sync** | For a chat that is behind or forked: keep the newer copy (for a fork you pick which), and make the other account use it. The out-of-date history is moved to the switcher's backups, never deleted. The other account's own record of the chat is replaced (after a backup), keeping its archived and starred state; the pin list is not touched. |
+| **Link** | For a chat that is still on one history but would split: tell the other account about the worktree so Claude keeps using it. It uses the same operation as Sync: the other account's chat record is replaced after a backup, and if that account had its own history file for the chat, it is moved to the backups. |
 | **Link all** | Link every such chat. |
 | **Unlink** | Undo the link for one chat. |
 
@@ -340,7 +341,7 @@ chat. If one is open, the switcher asks **Quit and sync**, then opens it again a
   differently. If the switcher sees a linked chat that Claude moved again, it turns linking off and
   says so; it does not unlink anything.
 - **Never open a linked chat in two accounts at once.** Both would write to one history file and it
-  would branch. Claude keeps an idle chat's process for up to 30 minutes, so closing the window is not
+  would branch. In testing, Claude kept an idle chat's process for about 30 minutes, so closing the window is not
   enough: wait, or quit that account. The panel warns when it sees a linked chat running in two
   accounts.
 - **Deleting a linked chat in one account deletes its history in both.** There is only one file.

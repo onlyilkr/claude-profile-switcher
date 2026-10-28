@@ -24,7 +24,7 @@ Knowing this helps judge whether something is in scope:
 | A profile's `config.json`, `plan-usage-history.json` | Signed-in state, usage | Read: the signed-in flag, the last account id, the token cache's length (the token itself is never used, kept or sent), usage percentages |
 | `~/.claude/projects/…/<id>.jsonl` | Chat history | Read, to compare the copies of a shared chat (message counts only). With linking turned on, Sync moves the out-of-date copy to the switcher's `backups/transcripts/`; history is never deleted or edited |
 | A profile's `git-worktrees.json` | Worktree list | Only with linking turned on, only while that account's Claude is closed, after a backup; one entry added or released, other fields kept. Never created if missing, never written if its format is unfamiliar |
-| A profile's chat record (`local_<id>.json`) | Chat record | Replaced only by Sync, after a backup, keeping its archived and pinned state |
+| A profile's chat record (`local_<id>.json`) | Chat record | Replaced only by Sync, Link and Link all (one operation), after a backup, and not for a chat already on the same folder with the lease held. The copy keeps its archived and starred state; the pin list is not touched |
 | `~/Library/Application Support/Claude Profile Switcher/links.json` | Link ledger | The switcher's own list of what it wrote, so Unlink can undo exactly that |
 | `~/Applications/Claude - <name>.app` | Launchers | Created and removed only if they carry the switcher's marker |
 | Launch Services | `claude://` handler | Changed only while sign-in routing is on; given back when it is turned off |

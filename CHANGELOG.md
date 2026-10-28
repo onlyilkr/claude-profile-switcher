@@ -25,8 +25,8 @@ All notable changes to this project are documented here. The format follows
 
 - The chat transfer no longer says "already there" for a copy that is behind or forked; it says how
   far behind.
-- The transfer warns before moving a chat that uses a git worktree, which Claude continues as a
-  separate copy in the other account.
+- With linking off, the transfer warns before moving a chat that uses a git worktree, which Claude
+  continues as a separate copy in the other account. With linking on, it links the chat instead.
 
 ## [1.0.0] - 2026-10-28
 
