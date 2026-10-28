@@ -50,12 +50,12 @@ public enum PinSync {
         for pin in sourcePins where shared.contains(pin) && seen.insert(pin).inserted { list.append(pin) }
         for pin in targetPins where !sourceIDs.contains(pin) && seen.insert(pin).inserted { list.append(pin) }
 
-        let before = Set(targetPins)
+        // Records of shared chats are checked against the new list, so a run that stopped
+        // halfway (list written, some records not) is repaired by the next one.
         let after = Set(list)
-        let star = list.filter { shared.contains($0) && !before.contains($0) }
-        var unstar: [String] = []
-        var unstarSeen = Set<String>()
-        for pin in targetPins where shared.contains(pin) && !after.contains(pin) && unstarSeen.insert(pin).inserted { unstar.append(pin) }
+        let states = transfer.recordStars(of: shared, in: target)
+        let star = list.filter { shared.contains($0) && states[$0]?.contains(false) == true }
+        let unstar = shared.filter { !after.contains($0) && states[$0]?.contains(true) == true }.sorted()
 
         if list == targetPins && star.isEmpty && unstar.isEmpty { return nil }
         return PinSyncPlan(source: source.id, newPins: list, star: star, unstar: unstar, seenPins: targetPins)
@@ -72,9 +72,12 @@ public enum PinSync {
             throw SwitcherError(L("The pins changed since they were read; pins were not synced.", "Pinler okunduktan sonra değişti; eşitlenmedi."))
         }
         try transfer.writePins(plan.newPins, to: target, openFolders: openFolders)
-        // The list is written; a record that fails now leaves Claude to reconcile the star.
-        try transfer.setStarred(true, ids: plan.star, in: target)
-        try transfer.setStarred(false, ids: plan.unstar, in: target)
+        // The list is written; every record is tried, failures are reported once at the end.
+        let failed = transfer.setStarred(true, ids: plan.star, in: target) + transfer.setStarred(false, ids: plan.unstar, in: target)
+        if failed > 0 {
+            throw SwitcherError(L("The pin list was written, but \(failed) chat record(s) could not be updated; the next launch retries.",
+                                  "Pin listesi yazıldı, ancak \(failed) sohbet kaydı güncellenemedi; sonraki açılışta yeniden denenir."))
+        }
     }
 }
 
@@ -96,10 +99,30 @@ extension ChatTransfer {
         return ids
     }
 
+    /// isStarred of every record of these chats (absent counts as false), per chat; only these
+    /// records are parsed.
+    func recordStars(of ids: Set<String>, in profile: Profile) -> [String: [Bool]] {
+        var out: [String: [Bool]] = [:]
+        for account in subdirectories(ChatTransfer.sessionRoot(profile)) {
+            for org in subdirectories(account) {
+                let deleted = deletedMarkers(in: org)
+                for file in records(in: org) {
+                    let id = String(file.lastPathComponent.dropLast(".json".count))
+                    guard ids.contains(id), !deleted.contains(String(id.dropFirst("local_".count))),
+                          let raw = readObject(file) else { continue }
+                    out[id, default: []].append((raw["isStarred"] as? Bool) ?? false)
+                }
+            }
+        }
+        return out
+    }
+
     /// Sets isStarred in every record of these chats (a chat can sit in several organisation
-    /// folders); a record that already has the value is not rewritten.
-    func setStarred(_ value: Bool, ids: [String], in profile: Profile) throws {
-        guard !ids.isEmpty else { return }
+    /// folders); a record that already has the value is not rewritten. Returns how many
+    /// records could not be written.
+    func setStarred(_ value: Bool, ids: [String], in profile: Profile) -> Int {
+        guard !ids.isEmpty else { return 0 }
+        var failed = 0
         let wanted = Set(ids.map { $0 + ".json" })
         for account in subdirectories(ChatTransfer.sessionRoot(profile)) {
             for org in subdirectories(account) {
@@ -107,14 +130,15 @@ extension ChatTransfer {
                 for file in records(in: org) where wanted.contains(file.lastPathComponent) {
                     if deleted.contains(String(file.lastPathComponent.dropFirst("local_".count).dropLast(".json".count))) { continue }
                     let real = file.resolvingSymlinksInPath()
-                    guard var raw = readObject(real) else { continue }
+                    guard var raw = readObject(real) else { failed += 1; continue }
                     // Absent counts as false: pinning adds the key, unpinning an absent key changes nothing.
                     if ((raw["isStarred"] as? Bool) ?? false) == value { continue }
                     raw["isStarred"] = value
-                    try write(raw, to: real)
+                    do { try write(raw, to: real) } catch { failed += 1 }
                 }
             }
         }
+        return failed
     }
 
     private func write(_ raw: [String: Any], to file: URL) throws {

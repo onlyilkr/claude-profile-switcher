@@ -156,4 +156,39 @@ final class PinSyncTests: XCTestCase {
         XCTAssertEqual(transfer.pins(of: t), ["local_b"])
         XCTAssertNil(try record(t, "local_a")["isStarred"])
     }
+
+    func testPartialRecordFailureIsHealedNextTime() throws {
+        let s = try profile("S", chats: ["local_a", "local_b"], pins: ["local_a", "local_b"])
+        let t = try profile("T", chats: ["local_a", "local_b"], pins: [])
+        let locked = ChatTransfer.sessionRoot(t).appendingPathComponent("acct/org2")
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: ["sessionId": "local_b"]).write(to: locked.appendingPathComponent("local_b.json"))
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        chmod(locked.path, 0o500)
+        defer { chmod(locked.path, 0o700) }
+        XCTAssertThrowsError(try PinSync.apply(plan, to: t, transfer: transfer, openFolders: [])) { error in
+            XCTAssertTrue((error as? SwitcherError)?.message.contains("1") == true)
+            XCTAssertTrue((error as? SwitcherError)?.message.contains("pin list was written") == true)
+        }
+        XCTAssertEqual(transfer.pins(of: t), ["local_a", "local_b"], "the list is written")
+        XCTAssertEqual(try record(t, "local_a")["isStarred"] as? Bool, true, "the other records were still written")
+        chmod(locked.path, 0o700)
+        let again = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer), "the unchanged list still has a mismatch to heal")
+        XCTAssertEqual(again.newPins, ["local_a", "local_b"])
+        XCTAssertEqual(again.star, ["local_b"])
+        try PinSync.apply(again, to: t, transfer: transfer, openFolders: [])
+        XCTAssertEqual(try record(t, "local_b", org: "org2")["isStarred"] as? Bool, true)
+        XCTAssertNil(PinSync.plan(target: t, source: s, transfer: transfer))
+    }
+
+    func testUnstarRecordWithoutKey() throws {
+        let s = try profile("S", chats: ["local_a"], pins: [])
+        let t = try profile("T", chats: ["local_a"], pins: [], starred: [])
+        XCTAssertNil(PinSync.plan(target: t, source: s, transfer: transfer), "an absent key already means not starred")
+        let u = try profile("U", chats: ["local_a"], pins: ["local_a"], starred: [])
+        let plan = try XCTUnwrap(PinSync.plan(target: u, source: s, transfer: transfer))
+        try PinSync.apply(plan, to: u, transfer: transfer, openFolders: [])
+        XCTAssertNil(try record(u, "local_a")["isStarred"], "no write needed for a record without the key")
+        XCTAssertEqual(transfer.pins(of: u), [])
+    }
 }
