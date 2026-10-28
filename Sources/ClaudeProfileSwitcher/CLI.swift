@@ -185,7 +185,12 @@ enum CLI {
     }
 
     static func sharedChats(_ sw: Switcher) {
-        let chats = SharedChatScanner(transcriptsRoot: sw.paths.transcriptsRoot).scan(sw.store.list(status: false))
+        // The ledger's link map makes linked chats read "linked, up to date" and lets the broken and
+        // archived-here-only states show. An unreadable ledger yields an empty map: plain statuses.
+        let ledger = LinksLedger(file: sw.paths.switcherHome.appendingPathComponent("links.json"))
+        let chats = SharedChatScanner(transcriptsRoot: sw.paths.transcriptsRoot,
+                                      links: { ledger.linkMap(profiles: sw.store.list(status: false), transcriptsRoot: sw.paths.transcriptsRoot) })
+            .scan(sw.store.list(status: false))
         if chats.isEmpty { print("No chat exists in more than one account."); return }
         for chat in chats {
             print("\(chat.title)  [\(chat.folder)]")
