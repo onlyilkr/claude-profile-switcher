@@ -425,8 +425,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let n = jobs.count
-        runLinks(jobs, ask: L((n == 1 ? "Link 1 chat?" : "Link \(n) chats?") + " In the other account, each chat's record is replaced and its own history, if any, is moved to the backups. Unlink does not bring these back.",
-                              "\(n) sohbet bağlansın mı? Öbür hesapta her sohbetin kaydı değiştirilir, varsa kendi geçmişi yedeklere taşınır. Bağlantıyı kaldırmak bunları geri getirmez."))
+        runLinks(jobs, ask: L((n == 1 ? "Link 1 chat?" : "Link \(n) chats?") + " In the other account, each chat's record is replaced, its own worktree is released to Claude, and its own history may be moved to the backups. Unlink does not bring these back.",
+                              "\(n) sohbet bağlansın mı? Öbür hesapta her sohbetin kaydı değiştirilir, kendi worktree'si Claude'a bırakılır ve kendi geçmişi yedeklere taşınabilir. Bağlantıyı kaldırmak bunları geri getirmez."))
     }
 
     /// Closes the accounts that must be closed, links off the main thread, rescans, says what happened
