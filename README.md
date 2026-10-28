@@ -308,8 +308,8 @@ shows how each copy compares, and, if you turn it on, can keep worktree chats on
   **Open where it's up to date** opens the account that has the newest copy.
 - **`claude-profiles --shared-chats`** prints the same list.
 
-Only local Code chats are covered. The switcher counts messages by reading the history files; it never
-changes them in this mode, and nothing it reads leaves your Mac.
+Only local Code chats are covered. The switcher counts messages by reading the history files; without linking turned on it
+never changes history files, and nothing it reads leaves your Mac.
 
 ### Linking worktree chats (experimental, off by default)
 
@@ -353,13 +353,14 @@ chat. If one is open, the switcher asks **Quit and sync**, then opens it again a
 #### Undoing it
 
 **Unlink** (one chat), **Remove links** when you turn the setting off, or
-`claude-profiles --unlink-chats` (all chats) remove what the switcher added. It keeps a list of what it
+`claude-profiles --unlink-chats` (all chats; it exits 0 even when it skips open accounts, and 1 only if its ledger cannot be read) remove what the switcher added. It keeps a list of what it
 wrote in `links.json` in its settings folder and removes an entry only if it is still as the switcher
 left it; changed ones are skipped and reported. Open accounts are skipped too.
 
-After unlinking, a chat goes back to the behaviour described above. Undo does not restore a
-worktree that an account had before linking: Claude may have reused it in the meantime. It does not
-move a history file back from the backups either.
+After unlinking, a chat goes back to the behaviour described above. Unlinking only removes the
+worktree-list entry the switcher added. It does not restore the other account's replaced chat record,
+and it does not move history back from the backups. It does not restore a worktree that an account
+had before linking either: Claude may have reused it in the meantime.
 
 #### Backups
 
