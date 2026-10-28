@@ -15,7 +15,20 @@ public final class Switcher {
 
     /// Launches this process started that have not shown up as a process yet. Starting a
     /// profile twice in that window would put two copies on one folder.
+    /// Read from background threads too (the linker's open-folder check runs off the main thread), so
+    /// every access goes through `startingLock`; a main-thread snapshot would miss launches made during a long link.
     private var starting: [String: Date] = [:]
+    private let startingLock = NSLock()
+
+    private func setStarting(_ id: String, _ date: Date?) {
+        startingLock.lock(); defer { startingLock.unlock() }
+        starting[id] = date
+    }
+
+    private func startedAt(_ id: String) -> Date? {
+        startingLock.lock(); defer { startingLock.unlock() }
+        return starting[id]
+    }
 
     public init(paths: Paths = Paths(), ownBundleID: String? = nil, claudePath: String? = nil) throws {
         self.paths = paths
@@ -54,7 +67,7 @@ public final class Switcher {
                        completion: ((Result<LaunchResult, Error>) -> Void)? = nil) {
         refreshClaude()
         if let pid = store.isRunning(target) {
-            starting[target.id] = nil
+            setStarting(target.id, nil)
             if let link { send(link, to: pid) }
             Focus.bring(pid: pid)
             completion?(.success(.focused))
@@ -81,11 +94,13 @@ public final class Switcher {
         let env = settings.profileEnv(target.id)
         if !env.isEmpty { config.environment = env }
 
-        starting[target.id] = Date()
+        syncPinsBeforeLaunch(target)
+
+        setStarting(target.id, Date())
         let done: (NSRunningApplication?, Error?) -> Void = { _, error in
             DispatchQueue.main.async {
                 if let error {
-                    self.starting[target.id] = nil
+                    self.setStarting(target.id, nil)
                     completion?(.failure(error))
                 } else {
                     completion?(.success(.started))
@@ -99,10 +114,48 @@ public final class Switcher {
         }
     }
 
+    /// Before an account opens: its pins for chats it shares follow the account used last.
+    /// Never blocks the launch; a failure is logged (no chat ids or titles) and the launch goes on.
+    private func syncPinsBeforeLaunch(_ target: Profile) {
+        guard settings.syncPins else { return }
+        let profiles = store.list(status: true)
+        let open = profiles.filter { $0.isRunning || isStarting($0) }.map(\.path)
+        Switcher.syncPinsBeforeLaunch(target: target, among: profiles, openFolders: open, enabled: true, transfer: transfer,
+                                      lastUsed: { ProfileStore.lastUsed($0.path) },
+                                      log: { self.log($0) }, logError: { self.logError($0) })
+    }
+
+    /// The part of the launch that is testable without Claude. `openFolders` are the running and
+    /// starting profiles; a target among them is left alone.
+    static func syncPinsBeforeLaunch(target: Profile, among: [Profile], openFolders: [URL], enabled: Bool, transfer: ChatTransfer,
+                                     lastUsed: (Profile) -> Date?, log: (String) -> Void, logError: (String) -> Void) {
+        guard enabled else { return }
+        let key = { (url: URL) in url.resolvingSymlinksInPath().standardizedFileURL.path }
+        if openFolders.contains(where: { key($0) == key(target.path) }) { return }
+        let targetIDs = transfer.chatIDs(in: target)
+        guard let source = PinSync.source(for: target, among: among, lastUsed: lastUsed, transfer: transfer, targetIDs: targetIDs) else { return }
+        do {
+            guard let plan = PinSync.plan(target: target, source: source, transfer: transfer, targetIDs: targetIDs) else { return }
+            try PinSync.apply(plan, to: target, transfer: transfer, openFolders: openFolders)
+            let pinned = plan.newPins.filter { !plan.seenPins.contains($0) }.count, unpinned = plan.seenPins.filter { !plan.newPins.contains($0) }.count
+            log("Pins synced from '\(source.name)' to '\(target.name)' (\(pinned) pinned, \(unpinned) unpinned)")
+        } catch {
+            // Fixed, path-free reasons only: the user-facing messages quote file paths and the log is pasted into bug reports.
+            let reason = (error as? SwitcherError)?.logReason ?? Switcher.describe(error)
+            logError("Pin sync for '\(target.name)' failed: \(reason)")
+        }
+    }
+
+    /// The folders of every profile that is running or starting: nothing may be written to these.
+    /// Safe to call from any thread.
+    public func openFolders() -> [URL] {
+        store.list(status: true).filter { $0.isRunning || isStarting($0) }.map(\.path)
+    }
+
     /// Launched from here in the last 20 s and not visible as a process yet. Treated as
     /// open by everything that must not touch an open profile.
     public func isStarting(_ target: Profile) -> Bool {
-        guard let since = starting[target.id] else { return false }
+        guard let since = startedAt(target.id) else { return false }
         return Date().timeIntervalSince(since) < 20 && store.isRunning(target) == nil
     }
 

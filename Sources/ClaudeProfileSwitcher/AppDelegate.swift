@@ -14,6 +14,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windows: [NSWindow] = []
     /// Accounts launched from here that have not shown up as a process yet.
     private var opening: [String: Date] = [:]
+    /// Last scan for chats that live in several accounts. Scans run off the main thread, only
+    /// when the panel opens, after a transfer and from the Shared chats window.
+    private var sharedChats: [SharedChat] = []
+    private var scanner: SharedChatScanner?
+    private var scanning = false
+    private var scanAgain = false
+    private let sharedChatsModel = SharedChatsModel()
+    private weak var sharedChatsWindow: NSWindow?
+    private var openTwiceTimer: Timer?
+    private var checkingOpenTwice = false
+    /// Linked chats seen broken by the last scan that started while no link operation ran.
+    private var brokenBefore: Set<String> = []
+    private var linksLedger: LinksLedger?
+    /// Chats already reported as open in two accounts; cleared once the condition goes away.
+    private var warnedOpenTwice: Set<String> = []
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Everything before any URL arrives: when Launch Services starts the app to hand it
@@ -29,9 +44,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         panel = PanelController(state: state, button: statusItem.button)
-        panel.onShow = { [weak self] in self?.refresh() }
+        panel.onShow = { [weak self] in self?.refresh(); self?.scanSharedChats() }
         panel.onTick = { [weak self] in self?.refresh() }
         wireActions()
+        sharedChatsModel.refresh = { [weak self] in self?.scanSharedChats() }
+        sharedChatsModel.openAccount = { [weak self] id in self?.open(id, keepPanel: true) }
+        sharedChatsModel.sync = { [weak self] chat in self?.syncChat(chat) }
+        sharedChatsModel.link = { [weak self] chat in self?.syncChat(chat) }
+        sharedChatsModel.unlink = { [weak self] chat in self?.unlink(sessionID: chat.id) }
+        sharedChatsModel.linkAll = { [weak self] in self?.linkAll() }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -41,6 +62,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.switcher?.retakeRouterIfNeeded()
         }
         switcher?.retakeRouterIfNeeded()
+        updateOpenTwiceTimer()
+        if linkingOn { scanSharedChats() }
     }
 
     @objc private func togglePanel() { panel.toggle() }
@@ -103,6 +126,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         set(\.routingOn, sw.routingOn)
         set(\.otherLinksID, sw.otherLinkTarget()?.id ?? Profile.defaultID)
         set(\.loginItem, SMAppService.mainApp.status == .enabled)
+        let linking = sw.settings["LinkWorktreeChats"] as? Bool == true
+        set(\.linkChats, linking)
+        set(\.syncPins, sw.settings.syncPins)
+        updateOpenTwiceTimer()
+        if sharedChatsModel.linkEnabled != linking { sharedChatsModel.linkEnabled = linking }
         set(\.showRoutingBanner, sw.settings.signInRouting == nil && profiles.count > 1)
     }
 
@@ -122,6 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var a = PanelActions()
         a.open = { [weak self] id in self?.open(id) }
         a.add = { [weak self] in self?.addAccount() }
+        a.openSharedChats = { [weak self] in self?.panel.close(); self?.openSharedChats() }
         a.openUsage = { [weak self] id in self?.openUsage(id) }
         a.rename = { [weak self] id, name in
             guard let sw = self?.switcher, let p = sw.store.resolve(id) else { return nil }
@@ -175,14 +204,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self?.refresh()
         }
+        a.setLinkChats = { [weak self] on in self?.setLinkChats(on) }
+        a.linkAll = { [weak self] in self?.panel.close(); self?.linkAll() }
+        a.setSyncPins = { [weak self] on in
+            self?.switcher?.settings.set("SyncPins", on)
+            self?.refresh()
+        }
         a.quit = { NSApp.terminate(nil) }
         a.downloadClaude = { NSWorkspace.shared.open(URL(string: "https://claude.ai/download")!) }
         state.actions = a
     }
 
-    private func open(_ id: String, fromURL: Bool = false) {
+    private func open(_ id: String, fromURL: Bool = false, keepPanel: Bool = false) {
         guard let sw = switcher, let p = sw.store.resolve(id, status: true) else { return }
-        panel.close()
+        if !keepPanel { panel.close() }
         if !p.isRunning { opening[p.id] = Date() }
         sw.launch(p, expectSignIn: !fromURL) { [weak self] result in
             if case .failure(let error) = result {
@@ -222,6 +257,299 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: Shared chats
+
+    /// Scans on a background queue and publishes on the main thread. A request that arrives
+    /// during a scan runs once more afterwards, so the result is never older than the request.
+    private func scanSharedChats() {
+        guard let sw = switcher else { return }
+        if scanning { scanAgain = true; return }
+        scanning = true
+        let startedBusy = sharedChatsModel.busy
+        sharedChatsModel.loading = true
+        let ledger = self.ledger(sw)
+        let scanner = self.scanner ?? SharedChatScanner(transcriptsRoot: sw.paths.transcriptsRoot,
+                                                        links: { ledger.linkMap(profiles: sw.store.list(status: false), transcriptsRoot: sw.paths.transcriptsRoot) })
+        self.scanner = scanner
+        let profiles = sw.store.list(status: false)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let found = scanner.scan(profiles)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.scanning = false
+                self.sharedChats = found
+                let diverged = found.filter(\.diverged)
+                self.set(\.divergedChats, diverged.count)
+                self.set(\.divergedChatIDs, Set(diverged.map(\.id)))
+                self.set(\.linkableChats, found.filter(LinkPolicy.isPlainSplit).count)
+                self.sharedChatsModel.chats = found.sorted { $0.diverged && !$1.diverged }
+                self.checkLinkHealth(found, startedBusy: startedBusy)
+                self.checkOpenInTwoAccounts()
+                if self.scanAgain { self.scanAgain = false; self.scanSharedChats() } else { self.sharedChatsModel.loading = false }
+            }
+        }
+    }
+
+    // MARK: Linking (experimental)
+
+    private var linkingOn: Bool { switcher?.settings["LinkWorktreeChats"] as? Bool == true }
+
+    /// One ledger for the whole app, so every linker shares its lock.
+    private func ledger(_ sw: Switcher) -> LinksLedger {
+        if let existing = linksLedger { return existing }
+        let made = LinksLedger(file: sw.paths.switcherHome.appendingPathComponent("links.json"))
+        linksLedger = made
+        return made
+    }
+
+    private func makeLinker(_ sw: Switcher) -> ChatLinker {
+        ChatLinker(paths: sw.paths, ledger: ledger(sw), openFolders: { sw.openFolders() })
+    }
+
+    /// Claude moved a linked chat again: the way linking works has changed, so linking goes off.
+    /// Nothing is unlinked.
+    /// Only a chat seen broken in two consecutive scans that both ran while no link operation did counts:
+    /// a scan that overlaps a link sees half-written files.
+    private func checkLinkHealth(_ found: [SharedChat], startedBusy: Bool) {
+        guard let sw = switcher, linkingOn else { brokenBefore = []; return }
+        if startedBusy || sharedChatsModel.busy { return }
+        let broken = LinkPolicy.brokenIDs(found)
+        let confirmed = !broken.isDisjoint(with: brokenBefore)
+        brokenBefore = broken
+        guard confirmed else { return }
+        brokenBefore = []
+        sw.settings.set("LinkWorktreeChats", false)
+        refresh()
+        let v = sw.claude.version
+        report(L("Claude moved a linked chat again (Claude \(v)); linking is off.", "Claude bağlı bir sohbeti yine taşıdı (Claude \(v)); bağlama kapatıldı."))
+    }
+
+    /// A linked chat run in two accounts at once branches its history. Only the process list is read,
+    /// and only while the setting is on.
+    private func updateOpenTwiceTimer() {
+        if linkingOn, openTwiceTimer == nil {
+            openTwiceTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.checkOpenInTwoAccounts() }
+        } else if !linkingOn, let timer = openTwiceTimer {
+            timer.invalidate(); openTwiceTimer = nil
+        }
+    }
+
+    private func checkOpenInTwoAccounts() {
+        let linked = sharedChats.filter(\.isLinked)
+        guard linkingOn, !linked.isEmpty else { warnedOpenTwice = []; return }
+        if checkingOpenTwice { return }
+        checkingOpenTwice = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let bad = LinkPolicy.openInSeveral(linked, live: ProcessScanner.liveCLISessions())
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.checkingOpenTwice = false
+                let fresh = bad.filter { !self.warnedOpenTwice.contains($0.id) }
+                self.warnedOpenTwice = Set(bad.map(\.id))
+                if !fresh.isEmpty {
+                    self.report(fresh.map {
+                        L("'\($0.title)' is open in two accounts at once; stop it in one, or its history will branch.",
+                          "'\($0.title)' iki hesapta aynı anda açık; birinde durdurun, yoksa geçmişi dallanır.")
+                    }.joined(separator: "\n"))
+                }
+            }
+        }
+    }
+
+    private func setLinkChats(_ on: Bool) {
+        guard let sw = switcher else { return }
+        brokenBefore = []
+        if on {
+            sw.settings.set("LinkWorktreeChats", true)
+            refresh()
+            scanSharedChats()
+            return
+        }
+        sw.settings.set("LinkWorktreeChats", false)
+        refresh()
+        warnedOpenTwice = []
+        guard !ledger(sw).linkedSessionIDs().isEmpty else { return }
+        panel.close()
+        let pick = choose(L("Remove existing links too?", "Mevcut bağlantılar da kaldırılsın mı?"),
+                          L("Linked chats keep sharing one folder and history until their links are removed. Removing needs the accounts closed; open ones are skipped.",
+                            "Bağlı sohbetler, bağlantıları kaldırılana kadar tek klasör ve geçmişi paylaşmaya devam eder. Kaldırmak için hesapların kapalı olması gerekir; açık olanlar atlanır."),
+                          buttons: [L("Keep links", "Bırak"), L("Remove links", "Bağlantıları kaldır")])
+        if pick == 1 { unlink(sessionID: nil) }
+    }
+
+    /// Removes the links of one chat, or of all of them (nil), off the main thread.
+    private func unlink(sessionID: String?) {
+        guard let sw = switcher else { return }
+        if sharedChatsModel.busy { reportBusy(); return }
+        sharedChatsModel.busy = true
+        let linker = makeLinker(sw)
+        let profiles = sw.store.list(status: false)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = linker.unlink(sessionID: sessionID, profiles: profiles)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.sharedChatsModel.busy = false
+                self.scanSharedChats()
+                if !result.skipped.isEmpty {
+                    self.report(L("Some links were not removed:", "Bazı bağlantılar kaldırılamadı:") + "\n- " + result.skipped.joined(separator: "\n- "))
+                }
+            }
+        }
+    }
+
+    private func syncChat(_ chat: SharedChat) {
+        var winner = LinkPolicy.winner(of: chat)
+        if LinkPolicy.isForked(chat) {
+            let choices = LinkPolicy.forkChoices(chat)
+            let pick = choose(L("Keep which copy? The other one is backed up.", "Hangi kopya kalsın? Öbürü yedeklenir."), chat.title,
+                              buttons: choices.map(\.profileName) + [L("Cancel", "Vazgeç")])
+            guard pick < choices.count else { return }
+            winner = choices[pick].profileID
+        }
+        guard let winner else {
+            report(L("No up-to-date copy to keep; nothing was changed.", "Tutulacak güncel kopya yok; hiçbir şey değiştirilmedi."))
+            return
+        }
+        runLinks([(chat, winner)])
+    }
+
+    private func reportBusy() {
+        report(L("Another link operation is running; try again in a moment.", "Başka bir bağlama işlemi sürüyor; birazdan tekrar deneyin."))
+    }
+
+    private func linkAll() {
+        let jobs = sharedChats.filter(LinkPolicy.isPlainSplit).compactMap { chat in LinkPolicy.winner(of: chat).map { (chat, $0) } }
+        guard !jobs.isEmpty else {
+            report(L("No chat needs linking right now.", "Şu an bağlanması gereken sohbet yok."))
+            scanSharedChats()
+            return
+        }
+        let n = jobs.count
+        runLinks(jobs, ask: L((n == 1 ? "Link 1 chat?" : "Link \(n) chats?") + " In the other account, each chat's record is replaced, its own worktree is released to Claude, and its own history may be moved to the backups. Unlink does not bring these back.",
+                              "\(n) sohbet bağlansın mı? Öbür hesapta her sohbetin kaydı değiştirilir, kendi worktree'si Claude'a bırakılır ve kendi geçmişi yedeklere taşınabilir. Bağlantıyı kaldırmak bunları geri getirmez."))
+    }
+
+    /// Closes the accounts that must be closed, links off the main thread, rescans, says what happened
+    /// and opens again what it closed. The winner may stay open; its chat process must not be running
+    /// (the linker refuses and says so).
+    /// `ask`: a question to confirm first; it joins the quit confirmation when there is one.
+    private func runLinks(_ jobs: [(chat: SharedChat, winner: String)], ask: String? = nil) {
+        guard let sw = switcher else { return }
+        if sharedChatsModel.busy { reportBusy(); return }
+        let profiles = sw.store.list(status: true)
+        // A forked copy the user chose to replace is only replaced while it still has the messages the scan showed.
+        var forkCounts: [String: [String: Int]] = [:]
+        for job in jobs { forkCounts[job.chat.id] = LinkPolicy.expectedForks(job.chat, winner: job.winner) }
+        var toQuit: [Profile] = []
+        for job in jobs {
+            for copy in job.chat.copies {
+                guard let p = profiles.first(where: { $0.id == copy.profileID }), p.isRunning || sw.isStarting(p) else { continue }
+                if (copy.profileID != job.winner || copy.leaseHeld != true), !toQuit.contains(where: { $0.id == p.id }) { toQuit.append(p) }
+            }
+        }
+        if let starting = toQuit.first(where: { sw.isStarting($0) }) {
+            alert(L("'\(starting.name)' is starting", "'\(starting.name)' açılıyor"),
+                  L("Wait until its window is up, then try again.", "Penceresi açılana kadar bekleyin, sonra tekrar deneyin."), style: .warning)
+            return
+        }
+        if !toQuit.isEmpty {
+            let names = toQuit.map(\.name).joined(separator: ", ")
+            let quit = L("'\(names)' must be closed to sync. Quit, sync, and open again?", "Eşitlemek için '\(names)' kapalı olmalı. Kapatılıp eşitlensin ve yeniden açılsın mı?")
+            guard confirm(L("Quit and sync", "Kapat ve eşitle"), [ask, quit].compactMap { $0 }.joined(separator: "\n\n"),
+                          yes: L("Quit and sync", "Kapat ve eşitle"), no: L("Cancel", "Vazgeç")) else { return }
+        } else if let ask {
+            guard confirm(L("Link all", "Tümünü bağla"), ask, yes: L("Link", "Bağla"), no: L("Cancel", "Vazgeç")) else { return }
+        }
+        sharedChatsModel.busy = true
+        quitAll(toQuit, quitSoFar: []) { [weak self] quitOK, closed in
+            guard let self else { return }
+            guard quitOK else {
+                self.sharedChatsModel.busy = false
+                closed.forEach { sw.launch($0) }
+                self.alert(L("'\(toQuit.first { sw.store.isRunning($0) != nil }?.name ?? "")' is still open", "'\(toQuit.first { sw.store.isRunning($0) != nil }?.name ?? "")' hâlâ açık"),
+                           L("Quit it from its Claude menu, then try again.", "Claude menüsünden çıkın, sonra tekrar deneyin."), style: .warning)
+                return
+            }
+            let linker = self.makeLinker(sw)
+            let all = sw.store.list(status: false)
+            DispatchQueue.global(qos: .userInitiated).async {
+                var results: [(SharedChat, Result<LinkReport, Error>)] = []
+                for job in jobs {
+                    do { results.append((job.chat, .success(try linker.link(job.chat, winner: job.winner, profiles: all, expectedForks: forkCounts[job.chat.id] ?? [:])))) }
+                    catch { results.append((job.chat, .failure(error))) }
+                }
+                DispatchQueue.main.async {
+                    self.sharedChatsModel.busy = false
+                    self.scanSharedChats()
+                    var problems: [String] = [], done: [SharedChat] = []
+                    for (chat, result) in results {
+                        switch result {
+                        case .failure(let error): problems.append("\(chat.title): \(error.localizedDescription)")
+                        case .success(let report):
+                            if !report.linked.isEmpty { done.append(chat) }
+                            for (id, note) in report.warnings.sorted(by: { $0.key < $1.key }) {
+                                problems.append("\(chat.title) (\(all.first { $0.id == id }?.name ?? id)): \(note)")
+                            }
+                            for (id, why) in report.skipped.sorted(by: { $0.key < $1.key }) {
+                                problems.append("\(chat.title) (\(all.first { $0.id == id }?.name ?? id)): \(why)")
+                            }
+                        }
+                    }
+                    closed.forEach { sw.launch($0) }
+                    if !problems.isEmpty { self.report(problems.joined(separator: "\n")) }
+                    if done.count == 1 {
+                        self.alert(L("Linked", "Bağlandı"),
+                                   L("Linked. Both accounts now use one folder and one history for '\(done[0].title)'.",
+                                     "Bağlandı. '\(done[0].title)' için iki hesap artık tek klasör ve tek geçmiş kullanıyor."))
+                    } else if done.count > 1 {
+                        self.alert(L("Linked", "Bağlandı"),
+                                   L("Linked \(done.count) chats. Their accounts now use one folder and one history each.",
+                                     "\(done.count) sohbet bağlandı. Hesaplar artık her sohbet için tek klasör ve tek geçmiş kullanıyor."))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Quits the accounts one after another; the callback gets whether all went (and which were closed).
+    private func quitAll(_ list: [Profile], quitSoFar: [Profile], done: @escaping (Bool, [Profile]) -> Void) {
+        guard let sw = switcher, let next = list.first else { done(true, quitSoFar); return }
+        sw.quit(next) { [weak self] ok in
+            guard ok else { done(false, quitSoFar); return }
+            self?.quitAll(Array(list.dropFirst()), quitSoFar: quitSoFar + [next], done: done)
+        }
+    }
+
+    /// Forgets a window when it closes and removes its own observer. The token lives in a box, so the
+    /// closure can remove it without capturing a variable that is assigned afterwards.
+    private func observeClose(of window: NSWindow) {
+        final class TokenBox { var token: NSObjectProtocol? }
+        let box = TokenBox()
+        box.token = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self, box] note in
+            self?.windows.removeAll { $0 === note.object as? NSWindow }
+            if let token = box.token { NotificationCenter.default.removeObserver(token); box.token = nil }
+        }
+    }
+
+    private func openSharedChats() {
+        scanSharedChats()
+        if let window = sharedChatsWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        let window = NSWindow(contentViewController: NSHostingController(rootView: SharedChatsView(model: sharedChatsModel)))
+        window.title = L("Shared chats", "Ortak sohbetler")
+        window.styleMask = [.titled, .closable, .resizable]
+        window.isReleasedWhenClosed = false
+        window.center()
+        sharedChatsWindow = window
+        windows.append(window)
+        observeClose(of: window)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
     // MARK: Chat transfer
 
     private func openTransfer(_ id: String) {
@@ -252,11 +580,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.isReleasedWhenClosed = false
         window.center()
         windows.append(window)
-        var token: NSObjectProtocol?
-        token = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] note in
-            self?.windows.removeAll { $0 === note.object as? NSWindow }
-            if let token { NotificationCenter.default.removeObserver(token) }
-        }
+        observeClose(of: window)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
@@ -267,6 +591,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert(L("'\(target.name)' is starting", "'\(target.name)' açılıyor"),
                   L("Wait until its window is up, then transfer again.", "Penceresi açılana kadar bekleyin, sonra aktarımı tekrar deneyin."), style: .warning)
             return
+        }
+        // A chat that runs in a git worktree is copied as a separate chat: Claude puts it in a
+        // new worktree of the other account. Said before anything is written.
+        if sw.settings["LinkWorktreeChats"] as? Bool != true, picked.contains(where: { $0.worktreePath != nil }) {
+            guard confirm(L("Some of these chats use a git worktree", "Bu sohbetlerden bazıları git worktree kullanıyor"),
+                          L("In '\(target.name)' a worktree chat is taken into a new worktree and continues as a separate copy; files that are not committed yet are not moved. Do not continue the same chat in both accounts.",
+                            "'\(target.name)' hesabında worktree'li sohbet yeni bir worktree'ye alınır ve ayrı bir kopya olarak sürer; henüz commit edilmemiş dosyalar taşınmaz. Aynı sohbeti iki hesapta birden sürdürmeyin."),
+                          yes: L("Copy anyway", "Yine de kopyala"), no: L("Cancel", "Vazgeç")) else { return }
         }
         guard sw.store.isRunning(target) != nil else { copy(picked, from: source, to: target, relaunch: false); return }
         // Claude keeps its chat list and pins in memory and writes them back when it quits,
@@ -303,26 +635,101 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         var copied = 0, there = 0, skipped: [String] = []
         var copiedSessions: [CodeSession] = []
+        var thereSessions: [CodeSession] = []
         for s in picked {
             switch sw.transfer.copy(s, to: &store) {
             case .copied: copied += 1; copiedSessions.append(s)
-            case .alreadyThere: there += 1
+            case .alreadyThere: there += 1; thereSessions.append(s)
             case .deletedInTarget: skipped.append("\(s.title): " + L("deleted in that account", "o hesapta silinmiş"))
             case .nameConflict: skipped.append("\(s.title): " + L("a different chat has that file name", "aynı dosya adında başka bir sohbet var"))
             case .noCLISession: skipped.append("\(s.title): " + L("not a resumable chat", "devam ettirilebilir bir sohbet değil"))
             case .failed(let why): skipped.append("\(s.title): \(why)")
             }
         }
+        if copied > 0 { scanSharedChats() }
         // Pins follow the chats copied now, in the source's order. A chat that was already
-        // there keeps whatever pin state the user gave it in that account.
+        // there is left alone here; pin sync may change it when the target opens.
         var pinned = 0
         do {
-            let openFolders = sw.store.list(status: true).filter { $0.isRunning }.map(\.path)
-            pinned = try sw.transfer.carryPins(of: copiedSessions, from: source, to: target, openFolders: openFolders)
+            // Starting accounts count as open, as they do for the linker.
+            pinned = try sw.transfer.carryPins(of: copiedSessions, from: source, to: target, openFolders: sw.openFolders())
         } catch {
             skipped.append(L("Pins were not carried over: \(error.localizedDescription)", "Pinler taşınamadı: \(error.localizedDescription)"))
         }
 
+        guard !thereSessions.isEmpty else {
+            // Only chats copied just now are bound: their record is the same, so the folders match.
+            bindThen(copiedSessions, from: source, to: target) { links in
+                self.finishCopy(copied: copied, there: there, notes: [], links: links, skipped: skipped, pinned: pinned, store: store, target: target, relaunch: relaunch)
+            }
+            return
+        }
+        // The chats that were already there may be behind or diverged; a scan of just these two
+        // accounts says which. It can take about a second, so it runs off the main thread.
+        let ids = Set(thereSessions.map { "local_" + $0.sessionID })
+        let profiles = [source, target]
+        let root = sw.paths.transcriptsRoot
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let found = SharedChatScanner(transcriptsRoot: root).scan(profiles).filter { ids.contains($0.id) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                var notes: [String] = [], plain = 0, split: [CodeSession] = []
+                for s in thereSessions {
+                    let chat = found.first { $0.id == "local_" + s.sessionID }
+                    switch chat?.status[target.id] {
+                    case .behind(let n):
+                        notes.append(L("\(s.title): already in '\(target.name)', but \(SharedChatsText.behind(n)) — don't continue it there",
+                                       "\(s.title): '\(target.name)' hesabında zaten var ama \(SharedChatsText.behind(n)); orada devam etmeyin"))
+                    case .forked(let n):
+                        notes.append(L("\(s.title): already in '\(target.name)', but it has diverged (\(SharedChatsText.ownMessages(n))) — don't continue it there",
+                                       "\(s.title): '\(target.name)' hesabında zaten var ama ayrışmış (\(SharedChatsText.ownMessages(n))) — orada devam etmeyin"))
+                    case .willSplit:
+                        split.append(s)
+                        notes.append(L("\(s.title): already in '\(target.name)', same history, but it will split when continued there",
+                                       "\(s.title): '\(target.name)' hesabında zaten var, geçmiş aynı ama orada sürdürülünce ayrışacak"))
+                    default: plain += 1
+                    }
+                }
+                // Already-there chats are bound only when they share the history and would just split; the
+                // behind or diverged ones go through Sync.
+                self.bindThen(copiedSessions + split, from: source, to: target) { links in
+                    self.finishCopy(copied: copied, there: plain, notes: notes, links: links, skipped: skipped, pinned: pinned, store: store, target: target, relaunch: relaunch)
+                }
+            }
+        }
+    }
+
+    /// With linking on, leases each worktree chat's worktree to it in the target (closed here), off the main
+    /// thread and under `busy`; then rescans and hands the result lines on.
+    private func bindThen(_ sessions: [CodeSession], from source: Profile, to target: Profile, then finish: @escaping ([String]) -> Void) {
+        guard let sw = switcher, linkingOn, sessions.contains(where: { $0.worktreePath != nil }) else { finish([]); return }
+        if sharedChatsModel.busy {
+            // Another link operation owns `busy` and the files; binding now could overlap it. Nothing is bound.
+            let why = L("Another link operation is running; try again in a moment.", "Başka bir bağlama işlemi sürüyor; birazdan tekrar deneyin.")
+            finish(sessions.filter { $0.worktreePath != nil }.map { L("\($0.title): not linked — \(why)", "\($0.title): bağlanmadı — \(why)") })
+            return
+        }
+        sharedChatsModel.busy = true
+        let linker = makeLinker(sw)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var lines: [String] = []
+            for s in sessions where s.worktreePath != nil {
+                if let why = linker.bindOnTransfer(session: s, from: source, to: target) {
+                    lines.append(L("\(s.title): not linked — \(why)", "\(s.title): bağlanmadı — \(why)"))
+                } else {
+                    lines.append(L("\(s.title): linked", "\(s.title): bağlandı"))
+                }
+            }
+            DispatchQueue.main.async {
+                self?.sharedChatsModel.busy = false
+                self?.scanSharedChats()
+                finish(lines)
+            }
+        }
+    }
+
+    private func finishCopy(copied: Int, there: Int, notes: [String], links: [String], skipped: [String], pinned: Int, store: TargetStore, target: Profile, relaunch: Bool) {
+        guard let sw = switcher else { return }
         var text = L("Copied \(copied) chat(s) to '\(target.name)'.", "'\(target.name)' hesabına \(copied) sohbet kopyalandı.")
         if there > 0 { text += " " + L("\(there) were already there.", "\(there) tanesi zaten oradaydı.") }
         if store.organisationCount > 1 {
@@ -330,17 +737,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             "O hesabın \(store.organisationCount) organizasyonu var; sohbetler en son kullandığına gitti.")
         }
         if pinned > 0 { text += " " + L("\(pinned) pinned, in the same order.", "\(pinned) tanesi aynı sırayla pinlendi.") }
+        if !notes.isEmpty { text += "\n\n- " + notes.joined(separator: "\n- ") }
+        if !links.isEmpty { text += "\n\n- " + links.joined(separator: "\n- ") }
         if !skipped.isEmpty { text += "\n\n" + L("Skipped:", "Atlananlar:") + "\n- " + skipped.joined(separator: "\n- ") }
-        text += "\n\n" + L("The chats stay in this account too. Finish a chat in one account before continuing it in the other, since both continue the same history.",
-                           "Sohbetler bu hesapta da kalır. İkisi aynı geçmişi sürdürdüğü için bir sohbeti diğer hesapta sürdürmeden önce birinde bitirin.")
+        text += "\n\n" + L("The chats stay in this account too. Chats without a worktree share the same history, so finish one in one account before continuing it in the other. For worktree chats, see the Shared chats window.",
+                           "Sohbetler bu hesapta da kalır. Worktree'siz sohbetler aynı geçmişi paylaşır; birini diğer hesapta sürdürmeden önce birinde bitirin. Worktree'li sohbetler için Ortak sohbetler penceresine bakın.")
+        let showButton = notes.isEmpty ? nil : L("Show shared chats", "Ortak sohbetleri göster")
         if relaunch {
-            alert(L("Chats copied", "Sohbetler kopyalandı"), text)
+            if choose(L("Chats copied", "Sohbetler kopyalandı"), text, buttons: [L("OK", "Tamam")] + [showButton].compactMap { $0 }) == 1 { openSharedChats() }
             sw.launch(target)
-        } else if copied + pinned > 0, confirm(L("Chats copied", "Sohbetler kopyalandı"), text + "\n\n" + L("Open '\(target.name)' now?", "'\(target.name)' şimdi açılsın mı?"),
-                                               yes: L("Open", "Aç"), no: L("Later", "Sonra")) {
-            sw.launch(target)
-        } else if copied + pinned == 0 {
-            alert(L("Nothing copied", "Hiçbir şey kopyalanmadı"), text)
+        } else if copied + pinned > 0 {
+            let pick = choose(L("Chats copied", "Sohbetler kopyalandı"), text + "\n\n" + L("Open '\(target.name)' now?", "'\(target.name)' şimdi açılsın mı?"),
+                              buttons: [L("Open", "Aç"), L("Later", "Sonra")] + [showButton].compactMap { $0 })
+            if pick == 0 { sw.launch(target) } else if pick == 2 { openSharedChats() }
+        } else {
+            if choose(L("Nothing copied", "Hiçbir şey kopyalanmadı"), text, buttons: [L("OK", "Tamam")] + [showButton].compactMap { $0 }) == 1 { openSharedChats() }
         }
     }
 
@@ -353,6 +764,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         a.alertStyle = style
         NSApp.activate(ignoringOtherApps: true)
         a.runModal()
+    }
+
+    /// Shows an alert with these buttons; returns the index of the one pressed.
+    private func choose(_ title: String, _ text: String, buttons: [String]) -> Int {
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = text
+        buttons.forEach { a.addButton(withTitle: $0) }
+        NSApp.activate(ignoringOtherApps: true)
+        return a.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
     }
 
     private func confirm(_ title: String, _ text: String, yes: String, no: String) -> Bool {

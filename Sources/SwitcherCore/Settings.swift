@@ -72,6 +72,9 @@ public final class Settings {
 
     public var openLinksIn: String? { self["OpenLinksIn"] as? String }
 
+    /// Pins of shared chats follow the account used last when an account opens. Absent means on.
+    public var syncPins: Bool { self["SyncPins"] as? Bool != false }
+
     /// Extra environment for one account's Claude, from "ProfileEnv": { "<id>": { "NAME": "value" } }.
     /// Names must be letters, digits and _, not starting with a digit; others are skipped.
     public func profileEnv(_ id: String) -> [String: String] {

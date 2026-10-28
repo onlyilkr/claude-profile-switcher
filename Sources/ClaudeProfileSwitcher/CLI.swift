@@ -4,7 +4,7 @@ import SwitcherCore
 enum CLI {
     static let valued: Set<String> = ["--launch", "--open-link", "--account", "--open-links-in", "--shortcut", "--claude-path", "--home",
                                       "--render-app-icon", "--render-panel-preview", "--lang"]
-    static let flags: Set<String> = ["--list", "--add-account", "--status", "--route-sign-ins", "--revert", "--help", "-h", "--version"]
+    static let flags: Set<String> = ["--list", "--add-account", "--status", "--route-sign-ins", "--revert", "--shared-chats", "--unlink-chats", "--help", "-h", "--version"]
 
     /// The app bundle this binary lives in. Homebrew runs it through a symlink
     /// (`claude-profiles`), and then Bundle.main is not the app, so the real path comes
@@ -38,6 +38,9 @@ enum CLI {
       --status                       Sign-in routing state and open accounts
       --route-sign-ins               Send browser sign-ins to the account that asked
       --revert                       Turn sign-in routing off, give claude:// back to Claude
+      --shared-chats                 Chats that exist in several accounts and how each copy compares
+      --unlink-chats                 Remove every link the switcher made between accounts' worktree chats
+                                     (open accounts are skipped)
       --open-link <url> [--account <name>]
                                      Open a claude:// link in a chosen account
       --open-links-in <name>         Where claude:// links that are not sign-ins go
@@ -95,6 +98,8 @@ enum CLI {
         do {
             if switches.contains("--list") { list(sw); return 0 }
             if switches.contains("--status") { status(sw); return 0 }
+            if switches.contains("--shared-chats") { sharedChats(sw); return 0 }
+            if switches.contains("--unlink-chats") { return unlinkChats(sw) }
             if switches.contains("--route-sign-ins") {
                 sw.enableRouting()
                 print("Sign-in routing is on. Browser sign-ins now go to the account that asked for them.")
@@ -177,6 +182,32 @@ enum CLI {
             }
             print("  \(p.name.padding(toLength: 24, withPad: " ", startingAt: 0)) pid \(String(p.pid!).padding(toLength: 7, withPad: " ", startingAt: 0)) \(state)")
         }
+    }
+
+    static func sharedChats(_ sw: Switcher) {
+        // The ledger's link map makes linked chats read "linked, up to date" and lets the broken and
+        // archived-here-only states show. An unreadable ledger yields an empty map: plain statuses.
+        let ledger = LinksLedger(file: sw.paths.switcherHome.appendingPathComponent("links.json"))
+        let chats = SharedChatScanner(transcriptsRoot: sw.paths.transcriptsRoot,
+                                      links: { ledger.linkMap(profiles: sw.store.list(status: false), transcriptsRoot: sw.paths.transcriptsRoot) })
+            .scan(sw.store.list(status: false))
+        if chats.isEmpty { print("No chat exists in more than one account."); return }
+        for chat in chats {
+            print("\(chat.title)  [\(chat.folder)]")
+            for copy in chat.copies {
+                print("  \(copy.profileName): \(SharedChatsText.status(chat.status[copy.profileID] ?? .latest, linked: chat.isLinked))")
+            }
+        }
+    }
+
+    static func unlinkChats(_ sw: Switcher) -> Int32 {
+        let ledger = LinksLedger(file: sw.paths.switcherHome.appendingPathComponent("links.json"))
+        do { try ledger.ensureReadable() } catch { return fail(error.localizedDescription) }
+        let linker = ChatLinker(paths: sw.paths, ledger: ledger, openFolders: { sw.openFolders() })
+        let report = linker.unlink(sessionID: nil, profiles: sw.store.list(status: false))
+        print("Removed \(report.removed) link(s).")
+        for item in report.skipped { print("Skipped: \(item)") }
+        return 0
     }
 
     // MARK: Helpers

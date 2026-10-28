@@ -92,6 +92,9 @@ final class ProcessTests: XCTestCase {
         XCTAssertEqual(parsed?.args, argv, "spaces and an empty argument survive")
         XCTAssertEqual(parsed?.env, ["HOME=/Users/a", "PATH=/usr/bin"])
         XCTAssertNil(ProcessScanner.parseProcArgs([1, 0]))
+        let argsOnly = ProcessScanner.parseProcArgs(procargs(argv, env: ["SECRET=x"]), environment: false)
+        XCTAssertEqual(argsOnly?.args, argv)
+        XCTAssertEqual(argsOnly?.env, [], "the environment is not decoded")
     }
 
     func testDataDir() {

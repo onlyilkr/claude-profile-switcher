@@ -24,6 +24,8 @@ public struct CodeSession: Identifiable, Equatable {
     public let folder: String
     public let updated: Date
     public let hasTranscript: Bool
+    /// The record's worktreePath, when the chat runs in a git worktree (nil if absent or empty).
+    public var worktreePath: String? = nil
 }
 
 public struct TargetStore {
@@ -164,6 +166,16 @@ public struct ChatTransfer {
         let add = pins(of: source).filter { wanted.contains($0) && !existing.contains($0) }
         guard !add.isEmpty else { return 0 }
 
+        try writePins(existing + add, to: target, openFolders: openFolders,
+                      afterwards: L(" The chats were copied.", " Sohbetler kopyalandı."))
+        return add.count
+    }
+
+    /// Replaces the pin list in `target`'s claude_desktop_config.json, keeping every other key.
+    /// Writes through a symlink to the real file, refuses when that file belongs to an open
+    /// profile or cannot be parsed, keeps a dated backup first, then writes atomically (0600).
+    /// `afterwards` is appended to the user-visible refusal messages.
+    public func writePins(_ list: [String], to target: Profile, openFolders: [URL] = [], afterwards: String = "") throws {
         // Through a symlink to the real file: a profile may share Default's config that way,
         // and an atomic write to the link itself would replace the link with a copy.
         let file = ChatTransfer.configFile(target).resolvingSymlinksInPath()
@@ -171,29 +183,30 @@ public struct ChatTransfer {
         // too, or its Claude writes the old list back over the change when it quits.
         let real = file.standardizedFileURL.path
         if let owner = openFolders.first(where: { real.hasPrefix($0.resolvingSymlinksInPath().standardizedFileURL.path + "/") }) {
-            throw SwitcherError(L("The pins live in \(real), which belongs to the open profile at \(owner.path). Quit it and transfer again; the chats were copied.",
-                                  "Pinler \(real) dosyasında, o da \(owner.path) konumundaki açık profile ait. Onu kapatıp aktarımı tekrar deneyin; sohbetler kopyalandı."))
+            throw SwitcherError(L("The pins live in \(real), which belongs to the open profile at \(owner.path). Quit it and try again.\(afterwards)",
+                                  "Pinler \(real) dosyasında, o da \(owner.path) konumundaki açık profile ait. Onu kapatıp tekrar deneyin.\(afterwards)"),
+                                logReason: "config belongs to an open profile")
         }
         var root: [String: Any] = [:]
         if FileManager.default.fileExists(atPath: file.path) {
             // Unreadable means a hand edit went wrong, not "empty": writing would wipe the
             // MCP servers and every other setting in it.
             guard let parsed = readObject(file) else {
-                throw SwitcherError(L("\(file.path) is not valid JSON, so the pins were not carried over. The chats were copied.",
-                                      "\(file.path) geçerli bir JSON değil, bu yüzden pinler taşınmadı. Sohbetler kopyalandı."))
+                throw SwitcherError(L("\(file.path) is not valid JSON, so the pins were not written.\(afterwards)",
+                                      "\(file.path) geçerli bir JSON değil, bu yüzden pinler yazılmadı.\(afterwards)"),
+                                      logReason: "config is not valid JSON")
             }
             root = parsed
             try ChatTransfer.backUp(file)
         }
         var preferences = (root["preferences"] as? [String: Any]) ?? [:]
         var epitaxy = (preferences["epitaxyPrefs"] as? [String: Any]) ?? [:]
-        epitaxy["starred-local-code-sessions"] = existing + add
+        epitaxy["starred-local-code-sessions"] = list
         preferences["epitaxyPrefs"] = epitaxy
         root["preferences"] = preferences
         let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         try data.write(to: file, options: .atomic)
         chmod(file.path, 0o600)
-        return add.count
     }
 
     /// A dated copy next to the file, never replacing an earlier one; the newest five are kept.
@@ -255,7 +268,8 @@ public struct ChatTransfer {
         return CodeSession(file: file, sessionID: sessionID, cliSessionID: cli,
                            priorCLISessionIDs: (raw["priorCliSessionIds"] as? [String]) ?? [],
                            title: title, folder: folder, updated: updated,
-                           hasTranscript: !cli.isEmpty && transcripts.contains(cli))
+                           hasTranscript: !cli.isEmpty && transcripts.contains(cli),
+                           worktreePath: (raw["worktreePath"] as? String).flatMap { $0.isEmpty ? nil : $0 })
     }
 
     func subdirectories(_ dir: URL) -> [URL] {

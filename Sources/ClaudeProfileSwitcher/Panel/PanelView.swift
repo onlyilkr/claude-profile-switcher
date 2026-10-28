@@ -18,6 +18,11 @@ struct PanelView: View {
                 if state.usagePaused && !state.usageNoticeDismissed {
                     UsagePausedNotice(openCount: state.openCount) { state.usageNoticeDismissed = true }
                 }
+                if state.showSharedChatsNotice {
+                    SharedChatsNotice(count: state.divergedChats, show: state.actions.openSharedChats) {
+                        state.sharedChatsNoticeDismissedFor = state.divergedChatIDs
+                    }
+                }
                 accounts
                 PanelDivider()
                 SettingsSection(state: state)
@@ -405,11 +410,46 @@ struct SettingsSection: View {
                     .fixedSize()
                 }
             }
+            if state.rows.count > 1 || state.linkChats {
+                ToggleRow(title: L("Keep worktree chats linked across accounts (experimental)", "Worktree sohbetlerini hesaplar arasında bağlı tut (deneysel)"),
+                          detail: linkDetail,
+                          isOn: Binding(get: { state.linkChats }, set: { state.actions.setLinkChats($0) }))
+            }
+            // Right under the setting, so turning it on shows what to do next.
+            if state.linkChats, state.linkableChats > 0 {
+                HStack {
+                    Text(state.linkableChats == 1 ? L("1 chat isn't linked yet", "1 sohbet henüz bağlı değil")
+                                                  : L("\(state.linkableChats) chats aren't linked yet", "\(state.linkableChats) sohbet henüz bağlı değil"))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(L("Link all", "Tümünü bağla")) { state.actions.linkAll() }
+                        .controlSize(.small)
+                }
+            }
+            if state.rows.count > 1 || !state.syncPins {
+                ToggleRow(title: L("Sync pins across accounts", "Pinleri hesaplar arasında eşitle"),
+                          detail: L("When an account opens, pins of the chats it shares with the account you used last follow that account, in the same order.",
+                                    "Bir hesap açılırken, en son kullandığınız hesapla ortak sohbetlerin pinleri o hesaptaki sırayla gelir."),
+                          isOn: Binding(get: { state.syncPins }, set: { state.actions.setSyncPins($0) }))
+            }
             ToggleRow(title: L("Open at login", "Oturum açılışında başlat"), detail: nil,
                       isOn: Binding(get: { state.loginItem }, set: { state.actions.setLogin($0) }))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+}
+
+private extension SettingsSection {
+    var linkDetail: String {
+        var text = L("Same folder and history in every account. Don't use a chat in two accounts at once; deleting it deletes its history everywhere; archive it in every account together. Tried with Claude \(LinkPolicy.testedVersion).",
+                     "Her hesapta aynı klasör ve geçmiş. Bir sohbeti iki hesapta aynı anda kullanmayın; silmek geçmişi her yerde siler; arşivlemeyi bütün hesaplarda birlikte yapın. Claude \(LinkPolicy.testedVersion) ile denendi.")
+        if !state.claudeVersion.isEmpty, !LinkPolicy.isTested(state.claudeVersion) {
+            let v = LinkPolicy.shortVersion(state.claudeVersion)
+            text += "\n" + L("Not yet tried with Claude \(v)", "Claude \(v) ile henüz denenmedi")
+        }
+        return text
     }
 }
 
@@ -487,6 +527,31 @@ struct UsagePausedNotice: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
+            Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(L("Dismiss", "Kapat"))
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.06)))
+        .padding(.horizontal, 10)
+        .padding(.bottom, 6)
+    }
+}
+
+struct SharedChatsNotice: View {
+    let count: Int
+    let show: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "arrow.triangle.branch").foregroundStyle(.secondary)
+            Text(L("\(count) chats differ between accounts", "\(count) sohbet hesaplar arasında farklı"))
+                .font(.system(size: 12, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button(L("Show", "Göster"), action: show).controlSize(.small)
             Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)

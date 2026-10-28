@@ -34,7 +34,7 @@ make install    # builds and copies the app to ~/Applications, then opens it
 
 | Path | What lives there |
 | --- | --- |
-| `Sources/SwitcherCore` | Everything testable: profiles, process detection, launching, sign-in routing, chat transfer, pins, usage, icons, launchers |
+| `Sources/SwitcherCore` | Everything testable: profiles, process detection, launching, sign-in routing, chat transfer, shared chats and linking (`SharedChats/`), pins and pin sync, usage, icons, launchers |
 | `Sources/ClaudeProfileSwitcher` | The menu bar app (`AppDelegate`, `Panel/`) and the command line (`CLI.swift`), one binary |
 | `Tests/SwitcherCoreTests` | Unit tests; they only ever use temporary folders |
 | `scripts/` | Building, packaging and publishing |
@@ -84,6 +84,15 @@ bar app running.
 
 **Claude writes its chat list and pins back when it quits.** Anything copied into a running copy's
 store or `claude_desktop_config.json` is lost, so the transfer quits the target first.
+
+**An account that is still starting is open.** A launch is not visible as a process for a few seconds, so
+anything that writes to an account's files (transfer, link, unlink, pin sync) must use
+`Switcher.openFolders()`, which includes accounts the switcher has just started, and check again right
+before writing. The check can run off the main thread, which is why the list is behind a lock.
+
+**Linked chats share one history file.** Never move or edit a transcript while any Claude Code process
+runs that chat (`ProcessScanner.liveCLISessions()`, which needs `--resume` in its arguments), and move a
+replaced history to `backups/transcripts/` only when no other copy still uses it.
 
 **macOS 14 only lets the active app hand focus on.** The switcher activates itself, then yields to
 Claude. A copy whose window was closed needs the Dock click's reopen event (`rapp`).
