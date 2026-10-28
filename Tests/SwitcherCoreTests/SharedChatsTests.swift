@@ -288,3 +288,176 @@ final class WorktreeLeasesTests: XCTestCase {
         XCTAssertThrowsError(try WorktreeLeases.adding(entry, for: "local_B", to: root))
     }
 }
+
+
+final class SharedChatScannerTests: XCTestCase {
+    private var home: URL!
+    private var projects: URL!
+    private var profileA: Profile!
+    private var profileB: Profile!
+
+    override func setUpWithError() throws {
+        home = FileManager.default.temporaryDirectory.appendingPathComponent("shared-chat-scan-\(UUID().uuidString)", isDirectory: true)
+        projects = home.appendingPathComponent("projects", isDirectory: true)
+        try FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
+        profileA = try makeProfile("A")
+        profileB = try makeProfile("B")
+    }
+
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: home) }
+
+    private func makeProfile(_ id: String) throws -> Profile {
+        let dir = home.appendingPathComponent("profile-\(id)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return Profile(id: id, name: "Profile \(id)", path: dir)
+    }
+
+    private func orgDir(_ p: Profile) throws -> URL {
+        let d = ChatTransfer.sessionRoot(p).appendingPathComponent("acct", isDirectory: true).appendingPathComponent("org", isDirectory: true)
+        try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }
+
+    @discardableResult
+    private func record(_ p: Profile, id: String = "s1", cli: String = "cli1", cwd: String = "/work/app",
+                        worktree: String? = nil, archived: Bool = false, extra: [String: Any] = [:]) throws -> URL {
+        var obj: [String: Any] = ["sessionId": "local_\(id)", "cliSessionId": cli, "cwd": cwd, "title": "Title",
+                                  "isArchived": archived, "lastActivityAt": 1_700_000_000_000]
+        if let worktree { obj["worktreePath"] = worktree }
+        for (k, v) in extra { obj[k] = v }
+        let url = try orgDir(p).appendingPathComponent("local_\(id).json")
+        try JSONSerialization.data(withJSONObject: obj).write(to: url)
+        return url
+    }
+
+    private func msg(_ i: Int) -> String { "{\"type\":\"user\",\"uuid\":\"u\(i)\"}" }
+
+    private func transcript(cwd: String, cli: String = "cli1", lines: [String]) throws {
+        let url = TranscriptLocator.transcript(root: projects, cwd: cwd, cliSessionID: cli)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try (lines.map { $0 + "\n" }.joined()).write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func scanner(linked: Set<String> = [], compare: @escaping (URL, URL) throws -> TranscriptRelation = TranscriptDiff.compare) -> SharedChatScanner {
+        SharedChatScanner(transcriptsRoot: projects, linkedSessionIDs: { linked }, compare: compare)
+    }
+
+    private func writeLeases(_ p: Profile, path: String, leasedBy: String) throws {
+        let root: [String: Any] = ["schemaVersion": 2, "worktrees": ["wt": ["name": "wt", "path": path, "leasedBy": leasedBy]]]
+        try JSONSerialization.data(withJSONObject: root).write(to: WorktreeLeases.file(p))
+    }
+
+    func testScanFindsChatsInTwoProfiles() throws {
+        try record(profileA); try record(profileB)
+        try record(profileA, id: "only", cli: "c2")
+        try transcript(cwd: "/work/app", lines: [msg(1)])
+        let chats = scanner().scan([profileA, profileB])
+        XCTAssertEqual(chats.count, 1)
+        XCTAssertEqual(chats[0].id, "local_s1")
+        XCTAssertEqual(chats[0].cliSessionID, "cli1")
+        XCTAssertEqual(chats[0].title, "Title")
+        XCTAssertEqual(chats[0].folder, "app")
+        XCTAssertEqual(Set(chats[0].copies.map(\.profileID)), ["A", "B"])
+        XCTAssertFalse(chats[0].diverged)
+    }
+
+    func testScanMarksBehindCopy() throws {
+        try record(profileA, cwd: "/work/a"); try record(profileB, cwd: "/work/b")
+        let common = (1...3).map(msg)
+        let q = "{\"type\":\"queue-operation\"}"
+        try transcript(cwd: "/work/a", lines: common + [q, q] + (4...7).map(msg))
+        try transcript(cwd: "/work/b", lines: common + ["{\"type\":\"cost-state\",\"n\":1}", "{\"type\":\"cost-state\",\"n\":2}"])
+        let chat = try XCTUnwrap(scanner().scan([profileA, profileB]).first)
+        XCTAssertEqual(chat.status["A"], .latest)
+        XCTAssertEqual(chat.status["B"], .behind(messages: 4))
+        XCTAssertTrue(chat.diverged)
+    }
+
+    func testScanMarksForkedAndNoTranscript() throws {
+        try record(profileA, cwd: "/work/a"); try record(profileB, cwd: "/work/b")
+        try transcript(cwd: "/work/a", lines: [msg(1), msg(10), msg(11)])
+        try transcript(cwd: "/work/b", lines: [msg(1), msg(20)])
+        var chat = try XCTUnwrap(scanner().scan([profileA, profileB]).first)
+        XCTAssertEqual(chat.status["A"], .latest)
+        XCTAssertEqual(chat.status["B"], .forked(messages: 1))
+        try FileManager.default.removeItem(at: TranscriptLocator.transcript(root: projects, cwd: "/work/b", cliSessionID: "cli1"))
+        chat = try XCTUnwrap(scanner().scan([profileA, profileB]).first)
+        XCTAssertEqual(chat.status["B"], .noTranscript)
+        XCTAssertFalse(chat.copies.first { $0.profileID == "B" }!.hasTranscript)
+    }
+
+    func testScanTreatsSameFolderAsInSync() throws {
+        try record(profileA); try record(profileB)
+        try transcript(cwd: "/work/app", lines: [msg(1), msg(2)])
+        let chat = try XCTUnwrap(scanner().scan([profileA, profileB]).first)
+        XCTAssertEqual(chat.status, ["A": .latest, "B": .latest])
+        XCTAssertFalse(chat.diverged)
+    }
+
+    func testScanMarksUnboundWorktreeAsWillSplit() throws {
+        try record(profileA, worktree: "/wt/one"); try record(profileB, worktree: "/wt/one")
+        try transcript(cwd: "/work/app", lines: [msg(1)])
+        try writeLeases(profileA, path: "/wt/one", leasedBy: "local_s1")
+        try writeLeases(profileB, path: "/wt/one", leasedBy: "local_other")
+        let chat = try XCTUnwrap(scanner().scan([profileA, profileB]).first)
+        XCTAssertEqual(chat.status["A"], .latest)
+        XCTAssertEqual(chat.status["B"], .willSplit)
+        XCTAssertEqual(chat.copies.first { $0.profileID == "A" }?.leaseHeld, true)
+        XCTAssertEqual(chat.copies.first { $0.profileID == "B" }?.leaseHeld, false)
+        XCTAssertTrue(chat.diverged)
+    }
+
+    func testScanSkipsDeletedChats() throws {
+        try record(profileA); try record(profileB)
+        try transcript(cwd: "/work/app", lines: [msg(1)])
+        try Data().write(to: try orgDir(profileB).appendingPathComponent("deleted_local_s1"))
+        XCTAssertTrue(scanner().scan([profileA, profileB]).isEmpty)
+    }
+
+    func testScanSkipsUnusableRecords() throws {
+        for p in [profileA!, profileB!] {
+            try record(p, id: "nocli", cli: "")
+            try record(p, id: "nocwd", cwd: "")
+            try record(p, id: "scratch", cli: "c3", cwd: "/x/scratch-workspaces/y")
+            try record(p, id: "remote", cli: "c4", extra: ["backend": ["kind": "remote"]])
+            try record(p, id: "localbe", cli: "c5", extra: ["backend": ["kind": "local"]])
+        }
+        let chats = scanner().scan([profileA, profileB])
+        XCTAssertEqual(chats.map(\.id), ["local_localbe"])
+    }
+
+    func testScanUsesCacheWhenFilesUnchanged() throws {
+        try record(profileA, cwd: "/work/a"); try record(profileB, cwd: "/work/b")
+        try transcript(cwd: "/work/a", lines: [msg(1), msg(2)])
+        try transcript(cwd: "/work/b", lines: [msg(1)])
+        var calls = 0
+        let s = scanner(compare: { a, b in calls += 1; return try TranscriptDiff.compare(a, b) })
+        let first = s.scan([profileA, profileB])
+        XCTAssertGreaterThan(calls, 0)
+        let after = calls
+        let second = s.scan([profileA, profileB])
+        XCTAssertEqual(calls, after)
+        XCTAssertEqual(first, second)
+    }
+
+    func testScanMarksLinkBrokenWhenLinkedCopiesDiffer() throws {
+        try record(profileA, cwd: "/work/a"); try record(profileB, cwd: "/work/b")
+        try transcript(cwd: "/work/a", lines: [msg(1)])
+        try transcript(cwd: "/work/b", lines: [msg(1)])
+        let chat = try XCTUnwrap(scanner(linked: ["local_s1"]).scan([profileA, profileB]).first)
+        XCTAssertTrue(chat.isLinked)
+        XCTAssertEqual(chat.status["A"], .latest)
+        XCTAssertEqual(chat.status["B"], .linkBroken)
+        XCTAssertTrue(chat.diverged)
+        XCTAssertFalse(try XCTUnwrap(scanner().scan([profileA, profileB]).first).diverged)
+    }
+
+    func testScanMarksArchivedHereOnlyWhenLinked() throws {
+        try record(profileA, archived: true); try record(profileB)
+        try transcript(cwd: "/work/app", lines: [msg(1)])
+        let chat = try XCTUnwrap(scanner(linked: ["local_s1"]).scan([profileA, profileB]).first)
+        XCTAssertEqual(chat.status["A"], .archivedHereOnly)
+        XCTAssertEqual(chat.status["B"], .latest)
+        XCTAssertEqual(try XCTUnwrap(scanner().scan([profileA, profileB]).first).status["A"], .latest)
+    }
+}
