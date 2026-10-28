@@ -258,6 +258,16 @@ final class ChatLinkerTests: XCTestCase {
         XCTAssertEqual(ledger().records().count, 1)
     }
 
+    func testBindOnTransferRefusesWhenTargetCopyHasOtherFolder() throws {
+        try diverged()
+        let leaseBefore = try Data(contentsOf: WorktreeLeases.file(lose))
+        let why = linker().bindOnTransfer(session: session(worktree: winCwd), from: win, to: lose)
+        XCTAssertEqual(why, L("The copy in this account has its own history; use Sync in Shared chats.",
+                              "Bu hesaptaki kopyanın kendi geçmişi var; Ortak sohbetler'deki Eşitle'yi kullanın."))
+        XCTAssertEqual(try Data(contentsOf: WorktreeLeases.file(lose)), leaseBefore)
+        XCTAssertTrue(ledger().records().isEmpty)
+    }
+
     // MARK: unlink
 
     func testUnlinkRemovesOnlyUnchangedEntries() throws {

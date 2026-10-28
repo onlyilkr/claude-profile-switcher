@@ -51,6 +51,16 @@ public enum LinkPolicy {
         return chats.filter { $0.isLinked && (dirs[$0.cliSessionID]?.count ?? 0) >= 2 }
     }
 
+    /// Only willSplit copies besides the up-to-date ones: safe for "Link all".
+    public static func isPlainSplit(_ chat: SharedChat) -> Bool {
+        needsLinking(chat) && chat.status.values.allSatisfy { $0 == .latest || $0 == .willSplit }
+    }
+
+    /// Ids of linked chats with a copy Claude moved again.
+    public static func brokenIDs(_ chats: [SharedChat]) -> Set<String> {
+        Set(chats.filter { $0.isLinked && $0.status.values.contains(.linkBroken) }.map(\.id))
+    }
+
     /// A linked chat has a copy Claude moved again.
     public static func hasBroken(_ chats: [SharedChat]) -> Bool {
         chats.contains { $0.isLinked && $0.status.values.contains(.linkBroken) }

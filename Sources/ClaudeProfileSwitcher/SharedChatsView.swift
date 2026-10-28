@@ -48,7 +48,7 @@ struct SharedChatsView: View {
                 Text(L("Chats in more than one account", "Birden fazla hesapta olan sohbetler")).font(.headline)
                 Spacer()
                 if model.loading || model.busy { ProgressView().controlSize(.small) }
-                if model.linkEnabled, model.chats.contains(where: LinkPolicy.needsLinking) {
+                if model.linkEnabled, model.chats.contains(where: LinkPolicy.isPlainSplit) {
                     Button(L("Link all", "Tümünü bağla")) { model.linkAll() }.disabled(model.busy)
                 }
                 Button(L("Refresh", "Yenile")) { model.refresh() }.disabled(model.loading)

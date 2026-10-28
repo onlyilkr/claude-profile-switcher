@@ -277,6 +277,23 @@ public struct ChatLinker {
         guard let path = session.worktreePath else { return nil }
         let id = "local_" + session.sessionID
         if isOpen(to) { return L("Claude is open in this account. Quit it and try again.", "Bu hesapta Claude açık. Kapatıp tekrar deneyin.") }
+        // The target already has its own copy of this chat in another folder: it has its own history, which
+        // binding would orphan. Sync (which backs it up) is the way.
+        let transfer = ChatTransfer(transcriptsRoot: paths.transcriptsRoot)
+        if let sourceCwd = transfer.readObject(session.file)?["cwd"] as? String {
+            for account in transfer.subdirectories(ChatTransfer.sessionRoot(to)) {
+                for org in transfer.subdirectories(account) {
+                    for file in transfer.records(in: org) {
+                        guard let raw = transfer.readObject(file), file.deletingPathExtension().lastPathComponent == id || raw["sessionId"] as? String == id,
+                              let cwd = raw["cwd"] as? String, !cwd.isEmpty else { continue }
+                        if !ChatLinker.sameItem(URL(fileURLWithPath: cwd), URL(fileURLWithPath: sourceCwd)) {
+                            return L("The copy in this account has its own history; use Sync in Shared chats.",
+                                     "Bu hesaptaki kopyanın kendi geçmişi var; Ortak sohbetler'deki Eşitle'yi kullanın.")
+                        }
+                    }
+                }
+            }
+        }
         let notInSource = L("This chat's worktree isn't in '\(from.name)'s worktree list, so it was copied without linking.",
                             "Bu sohbetin worktree'si '\(from.name)' hesabının worktree listesinde yok; bağlanmadan kopyalandı.")
         guard case .ok(let sroot) = WorktreeLeases.read(from), let entry = WorktreeLeases.entry(leasedTo: id, path: path, in: sroot) else {

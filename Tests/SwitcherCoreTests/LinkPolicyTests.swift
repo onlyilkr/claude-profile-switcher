@@ -51,4 +51,11 @@ final class LinkPolicyTests: XCTestCase {
         XCTAssertTrue(LinkPolicy.hasBroken([chat([copy("A")], ["A": .linkBroken], linked: true)]))
         XCTAssertFalse(LinkPolicy.hasBroken([chat([copy("A")], ["A": .linkBroken], linked: false)]))
     }
+
+    func testLinkAllOnlyPlainSplits() {
+        XCTAssertTrue(LinkPolicy.isPlainSplit(chat([copy("A"), copy("B")], ["A": .latest, "B": .willSplit])))
+        XCTAssertFalse(LinkPolicy.isPlainSplit(chat([copy("A"), copy("B"), copy("C")], ["A": .latest, "B": .willSplit, "C": .behind(messages: 1)])))
+        XCTAssertFalse(LinkPolicy.isPlainSplit(chat([copy("A"), copy("B")], ["A": .latest, "B": .archivedHereOnly])))
+        XCTAssertEqual(LinkPolicy.brokenIDs([chat([copy("A")], ["A": .linkBroken], linked: true)]), ["local_x"])
+    }
 }
