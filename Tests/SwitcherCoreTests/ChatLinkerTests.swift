@@ -345,7 +345,7 @@ final class ChatLinkerTests: XCTestCase {
         let report = try linker().link(try chat(), winner: "Default", profiles: [win, lose])
         XCTAssertEqual(report.linked, ["Two"])
         XCTAssertEqual(try Data(contentsOf: url), before)
-        XCTAssertTrue(backupFiles().isEmpty)
+        XCTAssertTrue(backupFiles().filter { $0.hasSuffix(".jsonl") }.isEmpty)
     }
 
     func testLinkRefusesLeaseHeldByAnotherChat() throws {
@@ -372,5 +372,101 @@ final class ChatLinkerTests: XCTestCase {
         XCTAssertNotNil(report.skipped["Two"])
         XCTAssertEqual(try obj(recordURL(lose))["cwd"] as? String, loseCwd)
         XCTAssertTrue(FileManager.default.fileExists(atPath: transcript(loseCwd).path))
+    }
+
+    // MARK: final review fixes
+
+    private func uuidLines(_ ids: [String]) -> String { ids.map { "{\"uuid\":\"\($0)\"}\n" }.joined() }
+
+    private let staleMessage = L("This chat changed since it was checked; refresh and try again.", "Bu sohbet kontrol edildikten sonra değişti; yenileyip tekrar deneyin.")
+
+    func testLinkRefusesWhenLoserGrewAfterScan() throws {
+        try diverged()
+        let c = try chat()      // the loser looked behind
+        try transcriptText(loseCwd, "{\"a\":1}\n{\"uuid\":\"new\"}\n")   // ...then it was continued
+        let report = try linker().link(c, winner: "Default", profiles: [win, lose])
+        XCTAssertEqual(report, LinkReport(linked: [], skipped: ["Two": staleMessage]))
+        XCTAssertEqual(try obj(recordURL(lose))["cwd"] as? String, loseCwd)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: transcript(loseCwd).path))
+        XCTAssertTrue(ledger().records().isEmpty)
+    }
+
+    func testLinkAcceptsPickedForkOnlyWhenUnchanged() throws {
+        try diverged()
+        try transcriptText(winCwd, uuidLines(["c", "w1"]) + "{\"pad\":\"xxxxxxxxxxxxxxxx\"}\n")   // larger, so it is the reference
+        try transcriptText(loseCwd, uuidLines(["c", "l1"]))
+        let c = try chat()
+        XCTAssertEqual(c.status["Two"], .forked(messages: 1))
+        // Not picked as a fork: refused.
+        XCTAssertEqual(try linker().link(c, winner: "Default", profiles: [win, lose]).skipped["Two"], staleMessage)
+        // Picked, but the loser has grown since: refused.
+        try transcriptText(loseCwd, uuidLines(["c", "l1", "l2"]))
+        XCTAssertEqual(try linker().link(c, winner: "Default", profiles: [win, lose], expectedForks: ["Two": 1]).skipped["Two"], staleMessage)
+        XCTAssertTrue(ledger().records().isEmpty)
+        // Picked and unchanged: linked.
+        try transcriptText(loseCwd, uuidLines(["c", "l1"]))
+        let report = try linker().link(c, winner: "Default", profiles: [win, lose], expectedForks: ["Two": 1])
+        XCTAssertEqual(report.linked, ["Two"])
+        XCTAssertEqual(try obj(recordURL(lose))["cwd"] as? String, winCwd)
+    }
+
+    func testLinkRefusesWhenWinnerRecordPointsAtAnotherHistory() throws {
+        try diverged()
+        let c = try chat()
+        try writeJSON(record(cwd: winCwd, extra: ["cliSessionId": "other-cli"]), recordURL(win))
+        XCTAssertThrowsError(try linker().link(c, winner: "Default", profiles: [win, lose]))
+        XCTAssertEqual(try obj(recordURL(lose))["cwd"] as? String, loseCwd)
+    }
+
+    func testTranscriptSharedWithSkippedCopyIsNotMoved() throws {
+        try diverged()
+        let three = Profile(id: "Three", name: "Three", path: paths.profileDir(id: "Three"))
+        try FileManager.default.createDirectory(at: three.path, withIntermediateDirectories: true)
+        // The third account's copy uses the loser's folder, and so the loser's history file; it is open.
+        try writeJSON(record(cwd: loseCwd), recordURL(three))
+        try writeJSON(leaseFile(["wt-lose": lease(loseCwd, name: "wt-lose", by: chatID)]), WorktreeLeases.file(three))
+        defer { chmod(recordURL(three).deletingLastPathComponent().path, 0o700) }
+        let c = try XCTUnwrap(SharedChatScanner(transcriptsRoot: paths.transcriptsRoot).scan([win, lose, three]).first { $0.id == chatID })
+        openNow = [three.path]
+        let report = try linker().link(c, winner: "Default", profiles: [win, lose, three])
+        XCTAssertEqual(report.linked, ["Two"])
+        XCTAssertNotNil(report.skipped["Three"])
+        XCTAssertNotNil(report.warnings["Two"])
+        XCTAssertEqual(try obj(recordURL(lose))["cwd"] as? String, winCwd)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: transcript(loseCwd).path))   // still there for the third copy
+        XCTAssertTrue(backupFiles().filter { $0.hasSuffix(".jsonl") }.isEmpty)
+    }
+
+    func testLinkBacksUpLoserWorktreeList() throws {
+        try diverged()
+        let before = try Data(contentsOf: WorktreeLeases.file(lose))
+        _ = try linker().link(try chat(), winner: "Default", profiles: [win, lose])
+        let rel = try XCTUnwrap(backupFiles().first { $0.hasSuffix("/Two/git-worktrees.json") })
+        XCTAssertEqual(try Data(contentsOf: paths.switcherHome.appendingPathComponent("backups/transcripts/" + rel)), before)
+    }
+
+    func testMoveFailureAfterRecordRewriteIsLinkedWithWarning() throws {
+        try diverged()
+        let c = try chat()
+        let dir = transcript(loseCwd).deletingLastPathComponent()
+        chmod(dir.path, 0o500)      // the history file can't be moved out
+        defer { chmod(dir.path, 0o700) }
+        let report = try linker().link(c, winner: "Default", profiles: [win, lose])
+        XCTAssertEqual(report.linked, ["Two"])
+        XCTAssertNil(report.skipped["Two"])
+        XCTAssertNotNil(report.warnings["Two"])
+        XCTAssertEqual(try obj(recordURL(lose))["cwd"] as? String, winCwd)
+    }
+
+    func testTwoLedgersAppendingConcurrentlyKeepEveryRecord() throws {
+        let file = paths.switcherHome.appendingPathComponent("links.json")
+        let a = LinksLedger(file: file), b = LinksLedger(file: file)
+        let rec = { (i: Int) in LinkRecord(profileID: "P\(i)", entryName: "e\(i)", action: "added", previous: nil, written: Data("{}".utf8), at: Date(), sessionID: "s") }
+        DispatchQueue.concurrentPerform(iterations: 120) { i in
+            try? (i % 2 == 0 ? a : b).append([rec(i)])
+        }
+        XCTAssertEqual(a.records().count, 120)
+        let mode = (try FileManager.default.attributesOfItem(atPath: file.path + ".lock")[.posixPermissions] as? Int) ?? 0
+        XCTAssertEqual(mode & 0o777, 0o600)
     }
 }

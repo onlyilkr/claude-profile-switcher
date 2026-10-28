@@ -39,16 +39,35 @@ public final class LinksLedger {
         return load() ?? []
     }
 
-    public func append(_ r: [LinkRecord]) throws {
+    /// Read-modify-write under this instance's lock and an exclusive `flock` on `links.json.lock`, so the
+    /// app and the command line (and several ledger instances) never lose each other's records.
+    private func exclusively<T>(_ body: () throws -> T) throws -> T {
         lock.lock(); defer { lock.unlock() }
-        guard let existing = load() else { throw unreadable() }
-        try save(existing + r)
+        let dir = file.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let fd = open(file.path + ".lock", O_RDWR | O_CREAT, 0o600)
+        guard fd >= 0 else { throw SwitcherError(String(cString: strerror(errno))) }
+        defer { close(fd) }
+        fchmod(fd, 0o600)
+        while flock(fd, LOCK_EX) != 0 {
+            if errno != EINTR { throw SwitcherError(String(cString: strerror(errno))) }
+        }
+        defer { flock(fd, LOCK_UN) }
+        return try body()
+    }
+
+    public func append(_ r: [LinkRecord]) throws {
+        try exclusively {
+            guard let existing = load() else { throw unreadable() }
+            try save(existing + r)
+        }
     }
 
     public func remove(where match: (LinkRecord) -> Bool) throws {
-        lock.lock(); defer { lock.unlock() }
-        guard let existing = load() else { throw unreadable() }
-        try save(existing.filter { !match($0) })
+        try exclusively {
+            guard let existing = load() else { throw unreadable() }
+            try save(existing.filter { !match($0) })
+        }
     }
 
     /// Throws when links.json exists but can't be read, so callers can refuse before writing anything.
@@ -60,6 +79,38 @@ public final class LinksLedger {
     /// The chats this ledger links (their record ids).
     public func linkedSessionIDs() -> Set<String> {
         Set(records().filter { $0.action == "added" }.map(\.sessionID))
+    }
+
+    /// chat id -> the profiles that are part of its link: those with an "added" record for it, plus the
+    /// profile whose copy of the chat sits in the folder those records point at (the winner).
+    public func linkMap(profiles: [Profile], transcriptsRoot: URL) -> [String: Set<String>] {
+        let added = records().filter { $0.action == "added" }
+        guard !added.isEmpty else { return [:] }
+        let transfer = ChatTransfer(transcriptsRoot: transcriptsRoot)
+        var out: [String: Set<String>] = [:]
+        for (chat, items) in Dictionary(grouping: added, by: \.sessionID) {
+            var ids = Set(items.map(\.profileID))
+            let paths = Set(items.compactMap { r -> String? in
+                (try? JSONSerialization.jsonObject(with: r.written) as? [String: Any])?["path"] as? String
+            }.map(LinksLedger.norm))
+            for profile in profiles {
+                for account in transfer.subdirectories(ChatTransfer.sessionRoot(profile)) {
+                    for org in transfer.subdirectories(account) {
+                        guard let raw = transfer.readObject(org.appendingPathComponent(chat + ".json")),
+                              let cwd = raw["cwd"] as? String else { continue }
+                        if paths.contains(LinksLedger.norm(cwd)) { ids.insert(profile.id) }
+                    }
+                }
+            }
+            out[chat] = ids
+        }
+        return out
+    }
+
+    private static func norm(_ path: String) -> String {
+        var p = URL(fileURLWithPath: path).standardizedFileURL.path
+        while p.count > 1 && p.hasSuffix("/") { p.removeLast() }
+        return p
     }
 
     public func isLinked(sessionID: String) -> Bool {

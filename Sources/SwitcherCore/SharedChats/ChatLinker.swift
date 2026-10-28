@@ -5,7 +5,11 @@ public struct LinkReport: Equatable {
     public var linked: [String]
     /// profileID -> reason
     public var skipped: [String: String]
-    public init(linked: [String] = [], skipped: [String: String] = [:]) { self.linked = linked; self.skipped = skipped }
+    /// profileID -> note for an account that is linked but needs a look (its old history file was left in place).
+    public var warnings: [String: String]
+    public init(linked: [String] = [], skipped: [String: String] = [:], warnings: [String: String] = [:]) {
+        self.linked = linked; self.skipped = skipped; self.warnings = warnings
+    }
 }
 
 public struct UnlinkReport: Equatable {
@@ -106,7 +110,9 @@ public struct ChatLinker {
         let alreadyLinked: Bool
     }
 
-    public func link(_ chat: SharedChat, winner: String, profiles: [Profile]) throws -> LinkReport {
+    /// `expectedForks`: profileID -> the number of messages of its own that a copy the user picked to
+    /// replace had when the chat was checked; such a forked copy is only replaced while it still has them.
+    public func link(_ chat: SharedChat, winner: String, profiles: [Profile], expectedForks: [String: Int] = [:]) throws -> LinkReport {
         guard let win = chat.copies.first(where: { $0.profileID == winner }) else {
             throw SwitcherError(L("The chat has no copy in that account.", "Sohbetin bu hesapta kopyası yok."))
         }
@@ -118,6 +124,9 @@ public struct ChatLinker {
         let transfer = ChatTransfer(transcriptsRoot: paths.transcriptsRoot)
         guard let winnerRaw = transfer.readObject(win.record) else {
             throw SwitcherError(L("The chat's record in the winning account can't be read.", "Sohbetin kazanan hesaptaki kaydı okunamadı."))
+        }
+        guard (winnerRaw["cliSessionId"] as? String) == chat.cliSessionID else {
+            throw SwitcherError(L("The record in the winning account points at a different history.", "Kazanan hesaptaki kayıt farklı bir geçmişe işaret ediyor."))
         }
         let winnerPath = win.worktreePath
         var winnerEntry: (name: String, value: [String: Any])?
@@ -160,6 +169,8 @@ public struct ChatLinker {
             plans.append(Plan(profile: profile, copy: copy, loserRaw: loserRaw, loserRoot: loserRoot, alreadyLinked: already))
         }
 
+        let stamp = String(Int(Date().timeIntervalSince1970 * 1000))
+        let planned = Set(plans.map(\.profile.id))
         for plan in plans {
             if plan.alreadyLinked { report.linked.append(plan.profile.id); continue }
             do {
@@ -171,8 +182,28 @@ public struct ChatLinker {
                     report.skipped[plan.profile.id] = L("This chat is still running in Claude. Quit Claude in every account and try again.",
                                                         "Bu sohbet Claude'da hâlâ çalışıyor. Tüm hesaplarda Claude'u kapatıp tekrar deneyin."); continue
                 }
-                try apply(plan, chat: chat, win: win, winnerRaw: winnerRaw, winnerEntry: winnerEntry, transfer: transfer)
+                // The scan may be old: the loser's history must still be behind the winner's (or, for a fork the
+                // user picked, still have just the messages the scan showed).
+                if !ChatLinker.sameItem(plan.copy.transcript, win.transcript), FileManager.default.fileExists(atPath: plan.copy.transcript.path) {
+                    var fine = false
+                    switch try? TranscriptDiff.compare(win.transcript, plan.copy.transcript) {
+                    case .some(.identical), .some(.firstAhead): fine = true
+                    case .some(.forked(_, let own)): fine = expectedForks[plan.profile.id] == own
+                    default: fine = false
+                    }
+                    if !fine { report.skipped[plan.profile.id] = ChatLinker.staleMessage; continue }
+                }
+                // Another copy that is not being relinked and uses the same history file keeps it.
+                let shared = chat.copies.contains { other in
+                    other.profileID != plan.profile.id && other.profileID != win.profileID && other.hasTranscript
+                        && (!planned.contains(other.profileID) || report.skipped[other.profileID] != nil)
+                        && ChatLinker.sameItem(other.transcript, plan.copy.transcript)
+                }
+                try backUpWorktreeList(of: plan.profile, stamp: stamp)
+                let warning = try apply(plan, chat: chat, win: win, winnerRaw: winnerRaw, winnerEntry: winnerEntry, transfer: transfer,
+                                        stamp: stamp, keepTranscript: shared)
                 report.linked.append(plan.profile.id)
+                if let warning { report.warnings[plan.profile.id] = warning }
             } catch {
                 report.skipped[plan.profile.id] = error.localizedDescription
             }
@@ -180,8 +211,39 @@ public struct ChatLinker {
         return report
     }
 
+    private static let staleMessage = L("This chat changed since it was checked; refresh and try again.",
+                                        "Bu sohbet kontrol edildikten sonra değişti; yenileyip tekrar deneyin.")
+
+    /// Copies the account's `git-worktrees.json` next to the history backups before anything is written.
+    /// Never rotated; nothing is written when it can't be copied.
+    private func backUpWorktreeList(of profile: Profile, stamp: String) throws {
+        let source = WorktreeLeases.file(profile).resolvingSymlinksInPath()
+        guard let data = try? Data(contentsOf: source) else { return }
+        let dir = backupFolder(stamp: stamp, profileID: profile.id)
+        try prepare(dir)
+        var dest = dir.appendingPathComponent("git-worktrees.json")
+        var n = 1
+        while FileManager.default.fileExists(atPath: dest.path) { dest = dir.appendingPathComponent("git-worktrees.json-\(n)"); n += 1 }
+        try data.write(to: dest)
+        chmod(dest.path, 0o600)
+    }
+
+    private func backupFolder(stamp: String, profileID: String) -> URL {
+        let safeID = profileID.replacingOccurrences(of: "/", with: "_")
+        return paths.switcherHome.appendingPathComponent("backups", isDirectory: true).appendingPathComponent("transcripts", isDirectory: true)
+            .appendingPathComponent(stamp, isDirectory: true).appendingPathComponent(safeID, isDirectory: true)
+    }
+
+    private func prepare(_ dir: URL) throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        for d in [dir.deletingLastPathComponent(), dir] { chmod(d.path, 0o700) }
+    }
+
+    /// Returns a warning when the account is linked but its old history file could not be (or was not) moved.
+    @discardableResult
     private func apply(_ plan: Plan, chat: SharedChat, win: ChatCopy, winnerRaw: [String: Any],
-                       winnerEntry: (name: String, value: [String: Any])?, transfer: ChatTransfer) throws {
+                       winnerEntry: (name: String, value: [String: Any])?, transfer: ChatTransfer,
+                       stamp: String, keepTranscript: Bool) throws -> String? {
         // 0. A ledger that can't be read means nothing is written for this account.
         try ledger.ensureReadable()
         // 1. Lease steps (the step that can be refused because Claude changed the file; nothing
@@ -234,8 +296,16 @@ public struct ChatLinker {
         // 3. History: this account's own copy goes to the backup folder, never deleted, and only
         //    when it is not the file the winner uses (same path or same device and inode).
         if !ChatLinker.sameItem(plan.copy.transcript, win.transcript) {
-            try moveToBackup(plan.copy, cli: chat.cliSessionID, profileID: plan.profile.id)
+            if keepTranscript {
+                return L("Its old history file was kept where it is: another account's copy still uses it.",
+                         "Eski geçmiş dosyası yerinde bırakıldı: başka bir hesabın kopyası hâlâ onu kullanıyor.")
+            }
+            do { try moveToBackup(plan.copy, cli: chat.cliSessionID, profileID: plan.profile.id, stamp: stamp) } catch {
+                return L("Linked, but its old history file could not be moved: \(error.localizedDescription)",
+                         "Bağlandı, ama eski geçmiş dosyası taşınamadı: \(error.localizedDescription)")
+            }
         }
+        return nil
     }
 
     private func writeRecord(_ data: Data, to record: URL) throws {
@@ -251,17 +321,13 @@ public struct ChatLinker {
         }
     }
 
-    private func moveToBackup(_ copy: ChatCopy, cli: String, profileID: String) throws {
+    private func moveToBackup(_ copy: ChatCopy, cli: String, profileID: String, stamp: String) throws {
         let fm = FileManager.default
         let sources = [copy.transcript,
                        TranscriptLocator.sidecar(root: paths.transcriptsRoot, cwd: copy.cwd, cliSessionID: cli)].filter { fm.fileExists(atPath: $0.path) }
         guard !sources.isEmpty else { return }
-        let stamp = String(Int(Date().timeIntervalSince1970 * 1000))
-        let safeID = profileID.replacingOccurrences(of: "/", with: "_")
-        let base = paths.switcherHome.appendingPathComponent("backups", isDirectory: true).appendingPathComponent("transcripts", isDirectory: true)
-        let dir = base.appendingPathComponent(stamp, isDirectory: true).appendingPathComponent(safeID, isDirectory: true)
-        try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        for d in [base.appendingPathComponent(stamp, isDirectory: true), dir] { chmod(d.path, 0o700) }
+        let dir = backupFolder(stamp: stamp, profileID: profileID)
+        try prepare(dir)
         for src in sources {
             var dest = dir.appendingPathComponent(src.lastPathComponent)
             var n = 1

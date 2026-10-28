@@ -57,7 +57,7 @@ public struct SharedChat: Equatable, Identifiable {
 /// Finds chats whose record exists in two or more profiles and classifies each copy.
 public final class SharedChatScanner {
     private let transfer: ChatTransfer
-    private let linkedSessionIDs: () -> Set<String>
+    private let links: () -> [String: Set<String>]
     private let compare: (URL, URL) throws -> TranscriptRelation
     private var cache: [String: TranscriptRelation] = [:]
     private var touched = Set<String>()
@@ -65,10 +65,10 @@ public final class SharedChatScanner {
     private let lock = NSLock()
 
     public init(transcriptsRoot: URL,
-                linkedSessionIDs: @escaping () -> Set<String> = { [] },
+                links: @escaping () -> [String: Set<String>] = { [:] },
                 compare: @escaping (URL, URL) throws -> TranscriptRelation = TranscriptDiff.compare) {
         self.transfer = ChatTransfer(transcriptsRoot: transcriptsRoot)
-        self.linkedSessionIDs = linkedSessionIDs
+        self.links = links
         self.compare = compare
     }
 
@@ -98,9 +98,9 @@ public final class SharedChatScanner {
             }
             for (id, item) in best { byID[id, default: []].append(item.found) }
         }
-        let linked = linkedSessionIDs()
+        let linked = links()
         return byID.compactMap { id, found in
-            found.count >= 2 ? build(id: id, found: found, isLinked: linked.contains(id)) : nil
+            found.count >= 2 ? build(id: id, found: found, link: linked[id]) : nil
         }.sorted {
             let a = $0.copies.map(\.lastActivity).max() ?? .distantPast, b = $1.copies.map(\.lastActivity).max() ?? .distantPast
             return a != b ? a > b : $0.id < $1.id
@@ -127,10 +127,12 @@ public final class SharedChatScanner {
                             transcript: transcript, hasTranscript: FileManager.default.fileExists(atPath: transcript.path),
                             isArchived: (raw["isArchived"] as? Bool) ?? false, lastActivity: activity, leaseHeld: held)
         let title = ((raw["title"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return (id, Found(copy: copy, cliSessionID: cli, title: title.isEmpty ? "Chat \(bare.prefix(8))" : title))
+        return (id, Found(copy: copy, cliSessionID: cli, title: title.isEmpty ? L("Chat \(bare.prefix(8))", "Sohbet \(bare.prefix(8))") : title))
     }
 
-    private func build(id: String, found: [Found], isLinked: Bool) -> SharedChat {
+    /// `link`: the profiles that are part of this chat's link, nil when the chat isn't linked.
+    private func build(id: String, found: [Found], link: Set<String>?) -> SharedChat {
+        let isLinked = link != nil
         let copies = found.map(\.copy).sorted { $0.profileID < $1.profileID }
         let reference = referenceCopy(copies)
         var status: [String: CopyStatus] = [:]
@@ -147,13 +149,17 @@ public final class SharedChatScanner {
         }
         // Precedence, highest first: linkBroken > noTranscript/forked/behind > archivedHereOnly > willSplit > latest.
         let sharing = Dictionary(grouping: copies, by: \.transcript)
-        let someArchived = copies.contains(where: \.isArchived), someActive = copies.contains { !$0.isArchived }
-        let cwdsDiffer = Set(copies.map(\.cwd)).count > 1
+        // Only the copies that are part of the link are judged by it; the others keep their ordinary status.
+        let inLink = copies.filter { link?.contains($0.profileID) == true }
+        let linkRef = reference.flatMap { r in inLink.contains { $0.profileID == r.profileID } ? r : nil } ?? inLink.first
+        let someArchived = inLink.contains(where: \.isArchived), someActive = inLink.contains { !$0.isArchived }
+        let cwdsDiffer = Set(inLink.map(\.cwd)).count > 1
         for copy in copies {
-            if isLinked && (cwdsDiffer && copy.cwd != reference?.cwd || copy.leaseHeld == false) {
+            let linked = link?.contains(copy.profileID) == true
+            if linked && (cwdsDiffer && copy.cwd != linkRef?.cwd || copy.leaseHeld == false) {
                 status[copy.profileID] = .linkBroken
             } else if status[copy.profileID] == .latest {
-                if isLinked && someArchived && someActive && copy.isArchived {
+                if linked && someArchived && someActive && copy.isArchived {
                     status[copy.profileID] = .archivedHereOnly
                 } else if (sharing[copy.transcript]?.count ?? 0) > 1 && copy.worktreePath != nil && copy.leaseHeld == false {
                     status[copy.profileID] = .willSplit

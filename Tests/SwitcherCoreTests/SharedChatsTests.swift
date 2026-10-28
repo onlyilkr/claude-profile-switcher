@@ -337,8 +337,8 @@ final class SharedChatScannerTests: XCTestCase {
         try (lines.map { $0 + "\n" }.joined()).write(to: url, atomically: true, encoding: .utf8)
     }
 
-    private func scanner(linked: Set<String> = [], compare: @escaping (URL, URL) throws -> TranscriptRelation = TranscriptDiff.compare) -> SharedChatScanner {
-        SharedChatScanner(transcriptsRoot: projects, linkedSessionIDs: { linked }, compare: compare)
+    private func scanner(links: [String: Set<String>] = [:], compare: @escaping (URL, URL) throws -> TranscriptRelation = TranscriptDiff.compare) -> SharedChatScanner {
+        SharedChatScanner(transcriptsRoot: projects, links: { links }, compare: compare)
     }
 
     private func writeLeases(_ p: Profile, path: String, leasedBy: String) throws {
@@ -443,7 +443,7 @@ final class SharedChatScannerTests: XCTestCase {
         try record(profileA, cwd: "/work/a"); try record(profileB, cwd: "/work/b")
         try transcript(cwd: "/work/a", lines: [msg(1)])
         try transcript(cwd: "/work/b", lines: [msg(1)])
-        let chat = try XCTUnwrap(scanner(linked: ["local_s1"]).scan([profileA, profileB]).first)
+        let chat = try XCTUnwrap(scanner(links: ["local_s1": ["A", "B"]]).scan([profileA, profileB]).first)
         XCTAssertTrue(chat.isLinked)
         XCTAssertEqual(chat.status["A"], .latest)
         XCTAssertEqual(chat.status["B"], .linkBroken)
@@ -454,7 +454,7 @@ final class SharedChatScannerTests: XCTestCase {
     func testScanMarksArchivedHereOnlyWhenLinked() throws {
         try record(profileA, archived: true); try record(profileB)
         try transcript(cwd: "/work/app", lines: [msg(1)])
-        let chat = try XCTUnwrap(scanner(linked: ["local_s1"]).scan([profileA, profileB]).first)
+        let chat = try XCTUnwrap(scanner(links: ["local_s1": ["A", "B"]]).scan([profileA, profileB]).first)
         XCTAssertEqual(chat.status["A"], .archivedHereOnly)
         XCTAssertEqual(chat.status["B"], .latest)
         XCTAssertEqual(try XCTUnwrap(scanner().scan([profileA, profileB]).first).status["A"], .latest)
@@ -482,21 +482,48 @@ final class SharedChatScannerTests: XCTestCase {
     }
 
     func testWillSplitOnlyForCopiesSharingAFile() throws {
-        try record(profileA, cwd: "/work/a", worktree: "/wt/one"); try record(profileB, cwd: "/work/b", worktree: "/wt/one")
+        let profileC = try makeProfile("C")
+        // A and B share one file (same folder); C has its own identical file. All three hold the same unbound worktree.
+        try record(profileA, cwd: "/work/a", worktree: "/wt/one"); try record(profileB, cwd: "/work/a", worktree: "/wt/one")
+        try record(profileC, cwd: "/work/c", worktree: "/wt/one")
         try transcript(cwd: "/work/a", lines: [msg(1)])
-        try transcript(cwd: "/work/b", lines: [msg(1)])
+        try transcript(cwd: "/work/c", lines: [msg(1)])
         try writeLeases(profileA, path: "/wt/one", leasedBy: "local_s1")
         try writeLeases(profileB, path: "/wt/one", leasedBy: "local_other")
-        let chat = try XCTUnwrap(scanner().scan([profileA, profileB]).first)
-        XCTAssertEqual(chat.copies.first { $0.profileID == "B" }?.leaseHeld, false)
-        XCTAssertEqual(chat.status["B"], .latest)
+        try writeLeases(profileC, path: "/wt/one", leasedBy: "local_other")
+        let chat = try XCTUnwrap(scanner().scan([profileA, profileB, profileC]).first)
+        XCTAssertEqual(chat.copies.first { $0.profileID == "C" }?.leaseHeld, false)
+        XCTAssertEqual(chat.status["A"], .latest)
+        XCTAssertEqual(chat.status["B"], .willSplit)
+        XCTAssertEqual(chat.status["C"], .latest)
+    }
+
+    func testCopyOutsideTheLinkIsNotLinkBroken() throws {
+        let profileC = try makeProfile("C")
+        try record(profileA, cwd: "/work/a", archived: false); try record(profileB, cwd: "/work/a", archived: false)
+        try record(profileC, cwd: "/work/c", archived: true)
+        try transcript(cwd: "/work/a", lines: [msg(1)])
+        try transcript(cwd: "/work/c", lines: [msg(1)])
+        let chat = try XCTUnwrap(scanner(links: ["local_s1": ["A", "B"]]).scan([profileA, profileB, profileC]).first)
+        XCTAssertTrue(chat.isLinked)
+        XCTAssertEqual(chat.status, ["A": .latest, "B": .latest, "C": .latest])
+        XCTAssertFalse(chat.diverged)
+    }
+
+    func testLinkMapNamesProfilesOfTheLink() throws {
+        let profileC = try makeProfile("C")
+        try record(profileA, cwd: "/work/a"); try record(profileB, cwd: "/work/a"); try record(profileC, cwd: "/work/c")
+        let written = try JSONSerialization.data(withJSONObject: ["name": "wt", "path": "/work/a", "leasedBy": "local_s1"])
+        let ledger = LinksLedger(file: home.appendingPathComponent("links.json"))
+        try ledger.append([LinkRecord(profileID: "B", entryName: "wt", action: "added", previous: nil, written: written, at: Date(), sessionID: "local_s1")])
+        XCTAssertEqual(ledger.linkMap(profiles: [profileA, profileB, profileC], transcriptsRoot: projects), ["local_s1": ["A", "B"]])
     }
 
     func testLinkBrokenWinsOverBehind() throws {
         try record(profileA, cwd: "/work/a"); try record(profileB, cwd: "/work/b")
         try transcript(cwd: "/work/a", lines: [msg(1), msg(2), msg(3)])
         try transcript(cwd: "/work/b", lines: [msg(1)])
-        let chat = try XCTUnwrap(scanner(linked: ["local_s1"]).scan([profileA, profileB]).first)
+        let chat = try XCTUnwrap(scanner(links: ["local_s1": ["A", "B"]]).scan([profileA, profileB]).first)
         XCTAssertEqual(chat.status["A"], .latest)
         XCTAssertEqual(chat.status["B"], .linkBroken)
     }
@@ -510,6 +537,12 @@ final class SharedChatScannerTests: XCTestCase {
         XCTAssertTrue(chat.copies.allSatisfy { $0.leaseHeld == nil })
         XCTAssertEqual(chat.status["A"], .latest)
         XCTAssertEqual(chat.status["B"], .latest)
+        // A lease nobody could read is no evidence of a split or a broken link, linked or not.
+        let linked = try XCTUnwrap(scanner(links: ["local_s1": ["A", "B"]]).scan([profileA, profileB]).first)
+        for c in [chat, linked] {
+            XCTAssertFalse(c.status.values.contains(.willSplit))
+            XCTAssertFalse(c.status.values.contains(.linkBroken))
+        }
     }
 
     func testDeletedMarkerWithoutLocalPrefix() throws {
