@@ -81,6 +81,8 @@ public final class Switcher {
         let env = settings.profileEnv(target.id)
         if !env.isEmpty { config.environment = env }
 
+        syncPinsBeforeLaunch(target)
+
         starting[target.id] = Date()
         let done: (NSRunningApplication?, Error?) -> Void = { _, error in
             DispatchQueue.main.async {
@@ -96,6 +98,36 @@ public final class Switcher {
             NSWorkspace.shared.open([url], withApplicationAt: claude.url, configuration: config, completionHandler: done)
         } else {
             NSWorkspace.shared.openApplication(at: claude.url, configuration: config, completionHandler: done)
+        }
+    }
+
+    /// Before an account opens: its pins for chats it shares follow the account used last.
+    /// Never blocks the launch; a failure is logged (no chat ids or titles) and the launch goes on.
+    private func syncPinsBeforeLaunch(_ target: Profile) {
+        guard settings.syncPins else { return }
+        let profiles = store.list(status: true)
+        let open = profiles.filter { $0.isRunning || isStarting($0) }.map(\.path)
+        Switcher.syncPinsBeforeLaunch(target: target, among: profiles, openFolders: open, enabled: true, transfer: transfer,
+                                      lastUsed: { ProfileStore.lastUsed($0.path) },
+                                      log: { self.log($0) }, logError: { self.logError($0) })
+    }
+
+    /// The part of the launch that is testable without Claude. `openFolders` are the running and
+    /// starting profiles; a target among them is left alone.
+    static func syncPinsBeforeLaunch(target: Profile, among: [Profile], openFolders: [URL], enabled: Bool, transfer: ChatTransfer,
+                                     lastUsed: (Profile) -> Date?, log: (String) -> Void, logError: (String) -> Void) {
+        guard enabled else { return }
+        let key = { (url: URL) in url.resolvingSymlinksInPath().standardizedFileURL.path }
+        if openFolders.contains(where: { key($0) == key(target.path) }) { return }
+        guard let source = PinSync.source(for: target, among: among, lastUsed: lastUsed, transfer: transfer) else { return }
+        do {
+            guard let plan = PinSync.plan(target: target, source: source, transfer: transfer) else { return }
+            try PinSync.apply(plan, to: target, transfer: transfer, openFolders: openFolders)
+            log("Pins synced from '\(source.name)' to '\(target.name)'")
+        } catch let error as SwitcherError {
+            logError("Pin sync for '\(target.name)' failed: \(error.message)")
+        } catch {
+            logError("Pin sync for '\(target.name)' failed: \(Switcher.describe(error))")
         }
     }
 

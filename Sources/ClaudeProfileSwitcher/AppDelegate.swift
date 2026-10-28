@@ -128,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         set(\.loginItem, SMAppService.mainApp.status == .enabled)
         let linking = sw.settings["LinkWorktreeChats"] as? Bool == true
         set(\.linkChats, linking)
+        set(\.syncPins, sw.settings.syncPins)
         updateOpenTwiceTimer()
         if sharedChatsModel.linkEnabled != linking { sharedChatsModel.linkEnabled = linking }
         set(\.showRoutingBanner, sw.settings.signInRouting == nil && profiles.count > 1)
@@ -204,6 +205,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.refresh()
         }
         a.setLinkChats = { [weak self] on in self?.setLinkChats(on) }
+        a.setSyncPins = { [weak self] on in
+            self?.switcher?.settings.set("SyncPins", on)
+            self?.refresh()
+        }
         a.quit = { NSApp.terminate(nil) }
         a.downloadClaude = { NSWorkspace.shared.open(URL(string: "https://claude.ai/download")!) }
         state.actions = a

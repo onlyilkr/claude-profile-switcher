@@ -178,6 +178,7 @@ make install    # builds, copies to ~/Applications, opens it
 | Add account | A new profile, opened at the sign-in screen. |
 | Send sign-ins to the right account | Sign-in routing on or off. Hidden until there is a second account. |
 | Open other claude:// links in | Where links that are not sign-ins go while routing is on. |
+| Sync pins across accounts | Pin sync on or off (on by default). Hidden until there is a second account. See [Pins](#pins). |
 
 Renaming and deleting happen in the row itself: type the new name and press Return, or confirm the move
 to the Trash. An account whose Claude is open cannot be deleted.
@@ -371,6 +372,26 @@ had before linking either: Claude may have reused it in the meantime.
   `~/Library/Application Support/Claude Profile Switcher/backups/transcripts/<time>/<account>/`.
   History files are never deleted by the switcher.
 
+### Pins
+
+Claude keeps a pinned chat in two places, and the two match in each account. When the switcher opens
+an account, the pins of the chats it shares with the account you used last follow that account:
+
+- **The account you used last wins.** Among your other accounts that share at least one chat with the
+  one being opened, the switcher takes the one that was used most recently, and only if it was used
+  after the account being opened.
+- **Only chats that exist in both accounts** are touched. Deleted chats are ignored.
+- **Same order.** The shared chats pinned there come first, in that order. A shared chat that is not
+  pinned there is unpinned in the opened account too (unpin follows).
+- **Pins of chats only the opened account has are kept**, after the shared ones, in their own order.
+- **Nothing is written when nothing would change.**
+
+This happens only when the switcher opens the account (the panel, a launcher, or `--launch`), and only
+while that account is closed. Opening Claude.app directly skips it. Before it writes, the switcher
+backs up the account's `claude_desktop_config.json` and the chat records it changes. If anything fails,
+the account still opens and a line without chat names goes to the switcher's log. Turn it off with
+**Sync pins across accounts** in the panel (`SyncPins` in `settings.json`).
+
 ## Launchers
 
 **⋯ > Add launcher to Applications** creates `~/Applications/Claude - <name>.app` with the account's
@@ -434,6 +455,7 @@ writes most of them; two are for hand editing:
 | `Labels`, `Colors` | Display names and badge colours, set from the panel. |
 | `SignInRouting`, `OpenLinksIn`, `RouterBackup` | Sign-in routing state. |
 | `ClaudePath` | Set by `--claude-path`. |
+| `SyncPins` | `false` turns off pin sync when the switcher opens an account; absent or `true` means on. Set from the panel. |
 | `LinkWorktreeChats` | `true` when worktree chat linking is on; absent means off. Set from the panel. |
 
 If `settings.json` stops being valid JSON after a hand edit, the switcher stops saving anything and

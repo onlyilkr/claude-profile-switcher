@@ -83,6 +83,7 @@ struct PanelActions {
     var decideRouting: (Bool) -> Void = { _ in }
     var openSharedChats: () -> Void = {}
     var setLinkChats: (Bool) -> Void = { _ in }
+    var setSyncPins: (Bool) -> Void = { _ in }
     var quit: () -> Void = {}
     var downloadClaude: () -> Void = {}
 }
@@ -99,6 +100,7 @@ final class PanelState: ObservableObject {
     @Published var otherLinksID = Profile.defaultID
     @Published var loginItem = false
     @Published var linkChats = false
+    @Published var syncPins = true
     @Published var showRoutingBanner = false
     @Published var errorMessage: String?
     /// Hidden until every open account is measured again, then shown the next time.

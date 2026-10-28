@@ -151,6 +151,7 @@ enum PanelPreview {
             s.rows = [row(Profile.defaultID, .open, last: 0, session: 38), row("Work", .closed, color: 0, last: 3600, session: 20)]
             s.claudeVersion = "4.30.1"
             s.linkChats = true
+            s.syncPins = true
             return s
         }),
         ("first-run", {

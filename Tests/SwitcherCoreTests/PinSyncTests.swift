@@ -191,4 +191,61 @@ final class PinSyncTests: XCTestCase {
         XCTAssertNil(try record(u, "local_a")["isStarred"], "no write needed for a record without the key")
         XCTAssertEqual(transfer.pins(of: u), [])
     }
+
+    // MARK: Launch path
+
+    final class Lines { var info: [String] = []; var errors: [String] = [] }
+
+    func runLaunchSync(_ t: Profile, _ s: Profile, enabled: Bool = true, open: [URL] = [], lines: Lines = Lines()) -> Lines {
+        let now = Date()
+        Switcher.syncPinsBeforeLaunch(target: t, among: [s, t], openFolders: open, enabled: enabled, transfer: transfer,
+                                      lastUsed: { $0.id == "S" ? now : now.addingTimeInterval(-3600) },
+                                      log: { lines.info.append($0) }, logError: { lines.errors.append($0) })
+        return lines
+    }
+
+    func testLaunchSyncsPinsBeforeStartingWhenEnabled() throws {
+        let s = try profile("S", chats: ["local_a", "local_b"], pins: ["local_b", "local_a"])
+        let t = try profile("T", chats: ["local_a", "local_b"], pins: ["local_a"])
+        let lines = runLaunchSync(t, s)
+        XCTAssertEqual(transfer.pins(of: t), ["local_b", "local_a"])
+        XCTAssertEqual(lines.info, ["Pins synced from 'S' to 'T'"])
+        XCTAssertTrue(lines.errors.isEmpty)
+    }
+
+    func testLaunchSkipsPinSyncWhenDisabled() throws {
+        let s = try profile("S", chats: ["local_a", "local_b"], pins: ["local_b", "local_a"])
+        let t = try profile("T", chats: ["local_a", "local_b"], pins: ["local_a"])
+        let lines = runLaunchSync(t, s, enabled: false)
+        XCTAssertEqual(transfer.pins(of: t), ["local_a"])
+        XCTAssertTrue(lines.info.isEmpty && lines.errors.isEmpty)
+    }
+
+    func testLaunchSkipsPinSyncForRunningTarget() throws {
+        let s = try profile("S", chats: ["local_a", "local_b"], pins: ["local_b", "local_a"])
+        let t = try profile("T", chats: ["local_a", "local_b"], pins: ["local_a"])
+        let lines = runLaunchSync(t, s, open: [t.path])
+        XCTAssertEqual(transfer.pins(of: t), ["local_a"])
+        XCTAssertTrue(lines.info.isEmpty && lines.errors.isEmpty)
+    }
+
+    func testLaunchLogsErrorWithoutIdsAndContinues() throws {
+        let s = try profile("S", chats: ["local_secret"], pins: ["local_secret"])
+        let t = try profile("T", chats: ["local_secret"], pins: [])
+        // The target's own config is not parseable: nothing is written, one message is logged.
+        try Data("not json".utf8).write(to: ChatTransfer.configFile(t))
+        let lines = runLaunchSync(t, s)
+        XCTAssertTrue(lines.info.isEmpty)
+        XCTAssertLessThanOrEqual(lines.errors.count, 1)
+        XCTAssertFalse(lines.errors.joined().contains("local_secret"))
+    }
+
+    func testSyncPinsSettingDefaultsOn() throws {
+        let settings = Settings(file: home.appendingPathComponent("settings.json"))
+        XCTAssertTrue(settings.syncPins)
+        settings.set("SyncPins", false)
+        XCTAssertFalse(settings.syncPins)
+        settings.set("SyncPins", true)
+        XCTAssertTrue(settings.syncPins)
+    }
 }

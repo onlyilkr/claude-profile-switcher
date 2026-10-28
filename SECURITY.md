@@ -20,10 +20,11 @@ Knowing this helps judge whether something is in scope:
 | `~/Library/Application Support/ClaudeProfile-<name>` | Extra profiles | Created empty; moved to the Trash on delete, only while that account's Claude is closed |
 | `~/Library/Application Support/Claude` | Your original account | Read; written only by a chat transfer into it, as below |
 | A profile's `claude-code-sessions/…` | Chat records | Written only by a transfer, as new files (`link(2)`, never replacing one) |
-| A profile's `claude_desktop_config.json` | Pin list | Only the pin list, only by a transfer, only while that Claude is closed, after a backup |
+| A profile's `claude_desktop_config.json` | Pin list | Only the pin list, only by a transfer, or when the switcher opens that account with pin sync on; only while that Claude is closed, after a backup |
 | A profile's `config.json`, `plan-usage-history.json` | Signed-in state, usage | Read: the signed-in flag, the last account id, the token cache's length (the token itself is never used, kept or sent), usage percentages |
 | `~/.claude/projects/…/<id>.jsonl` | Chat history | Read, to compare the copies of a shared chat (message counts only). With linking turned on, Sync moves the out-of-date copy to the switcher's `backups/transcripts/`; history is never deleted or edited |
 | A profile's `git-worktrees.json` | Worktree list | Only with linking turned on, only while that account's Claude is closed, after a backup; an entry added, and any entries leased to that chat released (Link can release several), other fields kept; the file is also copied to `backups/transcripts/` before each Link. Never created if missing, never written if its format is unfamiliar |
+| A profile's chat record (`local_<id>.json`), `isStarred` | Pinned flag | Rewritten when the switcher opens that account with pin sync on (the default), for chats the account shares with the account used last whose pin state differs; only while that account is closed, after a backup, other fields kept |
 | A profile's chat record (`local_<id>.json`) | Chat record | Replaced only by Sync, Link and Link all (one operation), after a backup, and not for a chat already on the same folder with the lease held. The copy keeps its archived and starred state; the pin list is not touched |
 | `~/Library/Application Support/Claude Profile Switcher/links.json` | Link ledger | The switcher's own list of what it wrote, so Unlink can undo exactly that |
 | `~/Applications/Claude - <name>.app` | Launchers | Created and removed only if they carry the switcher's marker |

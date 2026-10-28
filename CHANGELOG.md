@@ -20,6 +20,9 @@ All notable changes to this project are documented here. The format follows
 - `--unlink-chats` removes every link the switcher made (open accounts are skipped).
 - A check that linked chats are still linked; if Claude moved one again, linking turns itself off.
 - A warning when a linked chat is open in two accounts at once.
+- Pin sync, on by default (**Sync pins across accounts**, `SyncPins`): when the switcher opens an
+  account, the pins of the chats it shares with the account you used last follow that account, in the
+  same order. Only while the account is closed, after a backup, and only when something changes.
 
 ### Fixed
 

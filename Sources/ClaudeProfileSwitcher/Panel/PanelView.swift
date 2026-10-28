@@ -415,6 +415,12 @@ struct SettingsSection: View {
                           detail: linkDetail,
                           isOn: Binding(get: { state.linkChats }, set: { state.actions.setLinkChats($0) }))
             }
+            if state.rows.count > 1 || !state.syncPins {
+                ToggleRow(title: L("Sync pins across accounts", "Pinleri hesaplar arasında eşitle"),
+                          detail: L("When an account opens, pins of the chats it shares with the account you used last follow that account, in the same order.",
+                                    "Bir hesap açılırken, en son kullandığınız hesapla ortak sohbetlerin pinleri o hesaptaki sırayla gelir."),
+                          isOn: Binding(get: { state.syncPins }, set: { state.actions.setSyncPins($0) }))
+            }
             ToggleRow(title: L("Open at login", "Oturum açılışında başlat"), detail: nil,
                       isOn: Binding(get: { state.loginItem }, set: { state.actions.setLogin($0) }))
         }
