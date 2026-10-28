@@ -134,6 +134,16 @@ final class ChatTransferTests: XCTestCase {
         XCTAssertNotNil(copied["unknownField"], "fields the switcher does not know are kept")
     }
 
+    func testSessionCarriesWorktreePath() throws {
+        try record("w1", cli: "cw1", title: "Tree", extra: ["worktreePath": "/Users/x/proj/.claude/worktrees/a"])
+        try record("w2", cli: "cw2", title: "Plain")
+        try record("w3", cli: "cw3", title: "Empty", extra: ["worktreePath": ""])
+        let byTitle = Dictionary(uniqueKeysWithValues: transfer.sessions(in: source).map { ($0.title, $0) })
+        XCTAssertEqual(byTitle["Tree"]?.worktreePath, "/Users/x/proj/.claude/worktrees/a")
+        XCTAssertNil(byTitle["Plain"]?.worktreePath)
+        XCTAssertNil(byTitle["Empty"]?.worktreePath, "an empty path counts as none")
+    }
+
     func testSkipRules() throws {
         try record("del", cli: "c-del")
         try record("gone", cli: "c-gone")

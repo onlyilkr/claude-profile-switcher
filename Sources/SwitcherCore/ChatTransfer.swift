@@ -24,6 +24,8 @@ public struct CodeSession: Identifiable, Equatable {
     public let folder: String
     public let updated: Date
     public let hasTranscript: Bool
+    /// The record's worktreePath, when the chat runs in a git worktree (nil if absent or empty).
+    public var worktreePath: String? = nil
 }
 
 public struct TargetStore {
@@ -255,7 +257,8 @@ public struct ChatTransfer {
         return CodeSession(file: file, sessionID: sessionID, cliSessionID: cli,
                            priorCLISessionIDs: (raw["priorCliSessionIds"] as? [String]) ?? [],
                            title: title, folder: folder, updated: updated,
-                           hasTranscript: !cli.isEmpty && transcripts.contains(cli))
+                           hasTranscript: !cli.isEmpty && transcripts.contains(cli),
+                           worktreePath: (raw["worktreePath"] as? String).flatMap { $0.isEmpty ? nil : $0 })
     }
 
     func subdirectories(_ dir: URL) -> [URL] {

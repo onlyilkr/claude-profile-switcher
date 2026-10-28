@@ -329,6 +329,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   L("Wait until its window is up, then transfer again.", "Penceresi açılana kadar bekleyin, sonra aktarımı tekrar deneyin."), style: .warning)
             return
         }
+        // A chat that runs in a git worktree is copied as a separate chat: Claude puts it in a
+        // new worktree of the other account. Said before anything is written.
+        if sw.settings["LinkWorktreeChats"] as? Bool != true, picked.contains(where: { $0.worktreePath != nil }) {
+            guard confirm(L("Some of these chats use a git worktree", "Bu sohbetlerden bazıları git worktree kullanıyor"),
+                          L("In '\(target.name)' a worktree chat is taken into a new worktree and continues as a separate copy; files that are not committed yet are not moved. Do not continue the same chat in both accounts.",
+                            "'\(target.name)' hesabında worktree'li sohbet yeni bir worktree'ye alınır ve ayrı bir kopya olarak sürer; henüz commit edilmemiş dosyalar taşınmaz. Aynı sohbeti iki hesapta birden sürdürmeyin."),
+                          yes: L("Copy anyway", "Yine de kopyala"), no: L("Cancel", "Vazgeç")) else { return }
+        }
         guard sw.store.isRunning(target) != nil else { copy(picked, from: source, to: target, relaunch: false); return }
         // Claude keeps its chat list and pins in memory and writes them back when it quits,
         // which would drop anything copied under it.
@@ -364,10 +372,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         var copied = 0, there = 0, skipped: [String] = []
         var copiedSessions: [CodeSession] = []
+        var thereSessions: [CodeSession] = []
         for s in picked {
             switch sw.transfer.copy(s, to: &store) {
             case .copied: copied += 1; copiedSessions.append(s)
-            case .alreadyThere: there += 1
+            case .alreadyThere: there += 1; thereSessions.append(s)
             case .deletedInTarget: skipped.append("\(s.title): " + L("deleted in that account", "o hesapta silinmiş"))
             case .nameConflict: skipped.append("\(s.title): " + L("a different chat has that file name", "aynı dosya adında başka bir sohbet var"))
             case .noCLISession: skipped.append("\(s.title): " + L("not a resumable chat", "devam ettirilebilir bir sohbet değil"))
@@ -385,6 +394,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             skipped.append(L("Pins were not carried over: \(error.localizedDescription)", "Pinler taşınamadı: \(error.localizedDescription)"))
         }
 
+        guard !thereSessions.isEmpty else {
+            finishCopy(copied: copied, there: there, notes: [], skipped: skipped, pinned: pinned, store: store, target: target, relaunch: relaunch)
+            return
+        }
+        // The chats that were already there may be behind or diverged; a scan of just these two
+        // accounts says which. It can take about a second, so it runs off the main thread.
+        let ids = Set(thereSessions.map { "local_" + $0.sessionID })
+        let profiles = [source, target]
+        let root = sw.paths.transcriptsRoot
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let found = SharedChatScanner(transcriptsRoot: root).scan(profiles).filter { ids.contains($0.id) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                var notes: [String] = [], plain = 0
+                for s in thereSessions {
+                    let chat = found.first { $0.id == "local_" + s.sessionID }
+                    switch chat?.status[target.id] {
+                    case .behind(let n), .forked(let n):
+                        notes.append(L("\(s.title): already in '\(target.name)', but \(n) messages behind — don't continue it there",
+                                       "\(s.title): '\(target.name)' hesabında zaten var ama \(n) mesaj geride; orada devam etmeyin"))
+                    case .willSplit:
+                        notes.append(L("\(s.title): already in '\(target.name)', same history, but it will split when continued there",
+                                       "\(s.title): '\(target.name)' hesabında zaten var, geçmiş aynı ama orada sürdürülünce ayrışacak"))
+                    default: plain += 1
+                    }
+                }
+                self.finishCopy(copied: copied, there: plain, notes: notes, skipped: skipped, pinned: pinned, store: store, target: target, relaunch: relaunch)
+            }
+        }
+    }
+
+    private func finishCopy(copied: Int, there: Int, notes: [String], skipped: [String], pinned: Int, store: TargetStore, target: Profile, relaunch: Bool) {
+        guard let sw = switcher else { return }
         var text = L("Copied \(copied) chat(s) to '\(target.name)'.", "'\(target.name)' hesabına \(copied) sohbet kopyalandı.")
         if there > 0 { text += " " + L("\(there) were already there.", "\(there) tanesi zaten oradaydı.") }
         if store.organisationCount > 1 {
@@ -392,17 +434,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             "O hesabın \(store.organisationCount) organizasyonu var; sohbetler en son kullandığına gitti.")
         }
         if pinned > 0 { text += " " + L("\(pinned) pinned, in the same order.", "\(pinned) tanesi aynı sırayla pinlendi.") }
+        if !notes.isEmpty { text += "\n\n- " + notes.joined(separator: "\n- ") }
         if !skipped.isEmpty { text += "\n\n" + L("Skipped:", "Atlananlar:") + "\n- " + skipped.joined(separator: "\n- ") }
-        text += "\n\n" + L("The chats stay in this account too. Finish a chat in one account before continuing it in the other, since both continue the same history.",
-                           "Sohbetler bu hesapta da kalır. İkisi aynı geçmişi sürdürdüğü için bir sohbeti diğer hesapta sürdürmeden önce birinde bitirin.")
+        text += "\n\n" + L("The chats stay in this account too. Chats without a worktree share the same history, so finish one in one account before continuing it in the other. For worktree chats, see the Shared chats window.",
+                           "Sohbetler bu hesapta da kalır. Worktree'siz sohbetler aynı geçmişi paylaşır; birini diğer hesapta sürdürmeden önce birinde bitirin. Worktree'li sohbetler için Ortak sohbetler penceresine bakın.")
+        let showButton = notes.isEmpty ? nil : L("Show shared chats", "Ortak sohbetleri göster")
         if relaunch {
-            alert(L("Chats copied", "Sohbetler kopyalandı"), text)
+            if choose(L("Chats copied", "Sohbetler kopyalandı"), text, buttons: ["OK"] + [showButton].compactMap { $0 }) == 1 { openSharedChats() }
             sw.launch(target)
-        } else if copied + pinned > 0, confirm(L("Chats copied", "Sohbetler kopyalandı"), text + "\n\n" + L("Open '\(target.name)' now?", "'\(target.name)' şimdi açılsın mı?"),
-                                               yes: L("Open", "Aç"), no: L("Later", "Sonra")) {
-            sw.launch(target)
-        } else if copied + pinned == 0 {
-            alert(L("Nothing copied", "Hiçbir şey kopyalanmadı"), text)
+        } else if copied + pinned > 0 {
+            let pick = choose(L("Chats copied", "Sohbetler kopyalandı"), text + "\n\n" + L("Open '\(target.name)' now?", "'\(target.name)' şimdi açılsın mı?"),
+                              buttons: [L("Open", "Aç"), L("Later", "Sonra")] + [showButton].compactMap { $0 })
+            if pick == 0 { sw.launch(target) } else if pick == 2 { openSharedChats() }
+        } else {
+            if choose(L("Nothing copied", "Hiçbir şey kopyalanmadı"), text, buttons: ["OK"] + [showButton].compactMap { $0 }) == 1 { openSharedChats() }
         }
     }
 
@@ -415,6 +460,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         a.alertStyle = style
         NSApp.activate(ignoringOtherApps: true)
         a.runModal()
+    }
+
+    /// Shows an alert with these buttons; returns the index of the one pressed.
+    private func choose(_ title: String, _ text: String, buttons: [String]) -> Int {
+        let a = NSAlert()
+        a.messageText = title
+        a.informativeText = text
+        buttons.forEach { a.addButton(withTitle: $0) }
+        NSApp.activate(ignoringOtherApps: true)
+        return a.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
     }
 
     private func confirm(_ title: String, _ text: String, yes: String, no: String) -> Bool {
