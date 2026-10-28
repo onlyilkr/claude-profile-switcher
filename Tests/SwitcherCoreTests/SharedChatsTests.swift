@@ -289,7 +289,6 @@ final class WorktreeLeasesTests: XCTestCase {
     }
 }
 
-
 final class SharedChatScannerTests: XCTestCase {
     private var home: URL!
     private var projects: URL!
@@ -459,5 +458,64 @@ final class SharedChatScannerTests: XCTestCase {
         XCTAssertEqual(chat.status["A"], .archivedHereOnly)
         XCTAssertEqual(chat.status["B"], .latest)
         XCTAssertEqual(try XCTUnwrap(scanner().scan([profileA, profileB]).first).status["A"], .latest)
+    }
+
+    func testReferenceTakesOverWhenSmallerFileIsAhead() throws {
+        try record(profileA, cwd: "/work/a"); try record(profileB, cwd: "/work/b")
+        let q = "{\"type\":\"queue-operation\",\"padding\":\"" + String(repeating: "x", count: 200) + "\"}"
+        try transcript(cwd: "/work/a", lines: [msg(1)] + Array(repeating: q, count: 10))
+        try transcript(cwd: "/work/b", lines: [msg(1), msg(2), msg(3)])
+        let chat = try XCTUnwrap(scanner().scan([profileA, profileB]).first)
+        XCTAssertEqual(chat.status["B"], .latest)
+        XCTAssertEqual(chat.status["A"], .behind(messages: 2))
+    }
+
+    func testThreeProfiles() throws {
+        let profileC = try makeProfile("C")
+        try record(profileA, cwd: "/work/a"); try record(profileB, cwd: "/work/b"); try record(profileC, cwd: "/work/a")
+        try transcript(cwd: "/work/a", lines: [msg(1), msg(2), msg(3)])
+        try transcript(cwd: "/work/b", lines: [msg(1)])
+        let chat = try XCTUnwrap(scanner().scan([profileA, profileB, profileC]).first)
+        XCTAssertEqual(chat.status["A"], .latest)
+        XCTAssertEqual(chat.status["B"], .behind(messages: 2))
+        XCTAssertEqual(chat.status["C"], .latest)
+    }
+
+    func testWillSplitOnlyForCopiesSharingAFile() throws {
+        try record(profileA, cwd: "/work/a", worktree: "/wt/one"); try record(profileB, cwd: "/work/b", worktree: "/wt/one")
+        try transcript(cwd: "/work/a", lines: [msg(1)])
+        try transcript(cwd: "/work/b", lines: [msg(1)])
+        try writeLeases(profileA, path: "/wt/one", leasedBy: "local_s1")
+        try writeLeases(profileB, path: "/wt/one", leasedBy: "local_other")
+        let chat = try XCTUnwrap(scanner().scan([profileA, profileB]).first)
+        XCTAssertEqual(chat.copies.first { $0.profileID == "B" }?.leaseHeld, false)
+        XCTAssertEqual(chat.status["B"], .latest)
+    }
+
+    func testLinkBrokenWinsOverBehind() throws {
+        try record(profileA, cwd: "/work/a"); try record(profileB, cwd: "/work/b")
+        try transcript(cwd: "/work/a", lines: [msg(1), msg(2), msg(3)])
+        try transcript(cwd: "/work/b", lines: [msg(1)])
+        let chat = try XCTUnwrap(scanner(linked: ["local_s1"]).scan([profileA, profileB]).first)
+        XCTAssertEqual(chat.status["A"], .latest)
+        XCTAssertEqual(chat.status["B"], .linkBroken)
+    }
+
+    func testLeaseUnreadableGivesNilLeaseHeld() throws {
+        try record(profileA, worktree: "/wt/one"); try record(profileB, worktree: "/wt/one")
+        try transcript(cwd: "/work/app", lines: [msg(1)])
+        try Data("not json".utf8).write(to: WorktreeLeases.file(profileA))
+        // profile B has no lease file at all
+        let chat = try XCTUnwrap(scanner().scan([profileA, profileB]).first)
+        XCTAssertTrue(chat.copies.allSatisfy { $0.leaseHeld == nil })
+        XCTAssertEqual(chat.status["A"], .latest)
+        XCTAssertEqual(chat.status["B"], .latest)
+    }
+
+    func testDeletedMarkerWithoutLocalPrefix() throws {
+        try record(profileA); try record(profileB)
+        try transcript(cwd: "/work/app", lines: [msg(1)])
+        try Data().write(to: try orgDir(profileA).appendingPathComponent("deleted_s1.json"))
+        XCTAssertTrue(scanner().scan([profileA, profileB]).isEmpty)
     }
 }

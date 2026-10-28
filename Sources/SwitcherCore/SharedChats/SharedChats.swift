@@ -47,6 +47,9 @@ public final class SharedChatScanner {
     private let linkedSessionIDs: () -> Set<String>
     private let compare: (URL, URL) throws -> TranscriptRelation
     private var cache: [String: TranscriptRelation] = [:]
+    private var touched = Set<String>()
+    /// Serialises scans: the cache and the touched set belong to one scan at a time.
+    private let lock = NSLock()
 
     public init(transcriptsRoot: URL,
                 linkedSessionIDs: @escaping () -> Set<String> = { [] },
@@ -63,6 +66,9 @@ public final class SharedChatScanner {
     }
 
     public func scan(_ profiles: [Profile]) -> [SharedChat] {
+        lock.lock(); defer { lock.unlock() }
+        touched = []
+        defer { cache = cache.filter { touched.contains($0.key) } }
         var byID: [String: [Found]] = [:]
         for profile in profiles {
             let leases = WorktreeLeases.read(profile)
@@ -126,19 +132,18 @@ public final class SharedChatScanner {
             case .some(.secondAhead), .none: status[copy.profileID] = .noTranscript
             }
         }
-        // Copies pointing at one history file: a worktree chat that does not hold its lease splits off when opened.
-        let sharedFile = Dictionary(grouping: copies, by: \.transcript).values.contains { $0.count > 1 }
-        for copy in copies where status[copy.profileID] == .latest {
-            if sharedFile && copy.worktreePath != nil && copy.leaseHeld == false { status[copy.profileID] = .willSplit }
-        }
-        if isLinked {
-            let someArchived = copies.contains(where: \.isArchived), someActive = copies.contains { !$0.isArchived }
-            let cwdsDiffer = Set(copies.map(\.cwd)).count > 1
-            for copy in copies where status[copy.profileID] == .latest {
-                if cwdsDiffer && copy.cwd != reference?.cwd || copy.leaseHeld == false {
-                    status[copy.profileID] = .linkBroken
-                } else if someArchived && someActive && copy.isArchived {
+        // Precedence, highest first: linkBroken > noTranscript/forked/behind > archivedHereOnly > willSplit > latest.
+        let sharing = Dictionary(grouping: copies, by: \.transcript)
+        let someArchived = copies.contains(where: \.isArchived), someActive = copies.contains { !$0.isArchived }
+        let cwdsDiffer = Set(copies.map(\.cwd)).count > 1
+        for copy in copies {
+            if isLinked && (cwdsDiffer && copy.cwd != reference?.cwd || copy.leaseHeld == false) {
+                status[copy.profileID] = .linkBroken
+            } else if status[copy.profileID] == .latest {
+                if isLinked && someArchived && someActive && copy.isArchived {
                     status[copy.profileID] = .archivedHereOnly
+                } else if (sharing[copy.transcript]?.count ?? 0) > 1 && copy.worktreePath != nil && copy.leaseHeld == false {
+                    status[copy.profileID] = .willSplit
                 }
             }
         }
@@ -182,6 +187,7 @@ public final class SharedChatScanner {
 
     private func relation(_ first: URL, _ second: URL) -> TranscriptRelation? {
         let key = fingerprint(first) + "||" + fingerprint(second)
+        touched.insert(key)
         if let hit = cache[key] { return hit }
         guard let result = try? compare(first, second) else { return nil }
         cache[key] = result
