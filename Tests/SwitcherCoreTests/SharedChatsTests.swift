@@ -15,8 +15,8 @@ final class SharedChatsTests: XCTestCase {
     }
 
     func testLongNamesGetHashSuffix() {
-        // Constant computed once outside Swift (32-bit wrapping hash over the UTF-16 units, base 36).
-        let expected = String(repeating: "-", count: 1) + String(repeating: "x", count: 199) + "-sit9t9"
+        // Constant computed once outside Swift (32-bit wrapping hash over the UTF-16 units of the raw, unencoded path, base 36).
+        let expected = String(repeating: "-", count: 1) + String(repeating: "x", count: 199) + "-v734pd"
         XCTAssertEqual(TranscriptLocator.projectDirName(for: "/" + String(repeating: "x", count: 250)), expected)
         // Exactly 200 characters stays untouched.
         let exact = "/" + String(repeating: "x", count: 199)
