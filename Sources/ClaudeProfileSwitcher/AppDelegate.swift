@@ -508,6 +508,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Forgets a window when it closes and removes its own observer. The token lives in a box, so the
+    /// closure can remove it without capturing a variable that is assigned afterwards.
+    private func observeClose(of window: NSWindow) {
+        final class TokenBox { var token: NSObjectProtocol? }
+        let box = TokenBox()
+        box.token = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self, box] note in
+            self?.windows.removeAll { $0 === note.object as? NSWindow }
+            if let token = box.token { NotificationCenter.default.removeObserver(token); box.token = nil }
+        }
+    }
+
     private func openSharedChats() {
         scanSharedChats()
         if let window = sharedChatsWindow {
@@ -522,11 +533,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
         sharedChatsWindow = window
         windows.append(window)
-        var token: NSObjectProtocol?
-        token = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] note in
-            self?.windows.removeAll { $0 === note.object as? NSWindow }
-            if let token { NotificationCenter.default.removeObserver(token) }
-        }
+        observeClose(of: window)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
@@ -561,11 +568,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.isReleasedWhenClosed = false
         window.center()
         windows.append(window)
-        var token: NSObjectProtocol?
-        token = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] note in
-            self?.windows.removeAll { $0 === note.object as? NSWindow }
-            if let token { NotificationCenter.default.removeObserver(token) }
-        }
+        observeClose(of: window)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
