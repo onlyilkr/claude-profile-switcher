@@ -205,6 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.refresh()
         }
         a.setLinkChats = { [weak self] on in self?.setLinkChats(on) }
+        a.linkAll = { [weak self] in self?.panel.close(); self?.linkAll() }
         a.setSyncPins = { [weak self] on in
             self?.switcher?.settings.set("SyncPins", on)
             self?.refresh()
@@ -280,6 +281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let diverged = found.filter(\.diverged)
                 self.set(\.divergedChats, diverged.count)
                 self.set(\.divergedChatIDs, Set(diverged.map(\.id)))
+                self.set(\.linkableChats, found.filter(LinkPolicy.isPlainSplit).count)
                 self.sharedChatsModel.chats = found.sorted { $0.diverged && !$1.diverged }
                 self.checkLinkHealth(found, startedBusy: startedBusy)
                 self.checkOpenInTwoAccounts()

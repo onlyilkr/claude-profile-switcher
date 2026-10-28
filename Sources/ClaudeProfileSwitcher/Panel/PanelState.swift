@@ -83,6 +83,7 @@ struct PanelActions {
     var decideRouting: (Bool) -> Void = { _ in }
     var openSharedChats: () -> Void = {}
     var setLinkChats: (Bool) -> Void = { _ in }
+    var linkAll: () -> Void = {}
     var setSyncPins: (Bool) -> Void = { _ in }
     var quit: () -> Void = {}
     var downloadClaude: () -> Void = {}
@@ -112,6 +113,8 @@ final class PanelState: ObservableObject {
     /// The set of differing chats the user closed the notice for; it comes back when the set changes.
     @Published var sharedChatsNoticeDismissedFor: Set<String> = []
     var showSharedChatsNotice: Bool { divergedChats > 0 && sharedChatsNoticeDismissedFor != divergedChatIDs }
+    /// Chats that would split and need no choice, from the same scan: what **Link all** links.
+    @Published var linkableChats = 0
 
     /// Hover and the arrow keys move one highlight, as in a menu.
     @Published var highlighted: String?

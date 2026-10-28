@@ -20,8 +20,9 @@ optionally, their worktrees and history in step.
 - `--shared-chats` on the command line prints the same list.
 - Experimental, off by default: **Keep worktree chats linked across accounts**, so both accounts use
   one worktree and one history instead of two copies. In the Shared chats window, **Sync** (a copy that
-  is behind or forked), **Link** (a chat that would split), **Link all** and **Unlink**. Tried with
-  Claude 4.29; the panel says so when your Claude is another version.
+  is behind or forked), **Link** (a chat that would split), **Link all** (also under the setting in
+  the panel) and **Unlink**. Tried with Claude 4.29; the panel says so when your Claude is another
+  version.
   - Every file of Claude's that it changes is backed up first. An out-of-date history is moved to the
     switcher's backups, never deleted, and only when no other account's copy still uses that file;
     otherwise it stays and the result carries a warning.

@@ -331,7 +331,7 @@ says so. Nothing is linked until you ask:
 | --- | --- |
 | **Sync** | For a chat that is behind or forked: keep the newer copy (for a fork you pick which), and make the other account use it. The out-of-date history is moved to the switcher's backups, never deleted (see below for when it stays). The other account's own record of the chat is replaced (after a backup), keeping its archived and starred state; the pin list is not touched. |
 | **Link** | For a chat that is still on one history but would split: tell the other account about the worktree so Claude keeps using it. It uses the same operation as Sync: the other account's chat record is replaced after a backup, and if that account had its own history file for the chat, it is moved to the backups (see below for when it stays). |
-| **Link all** | Link every such chat. |
+| **Link all** | Link every such chat. The same button sits under the setting in the panel while there are chats to link. |
 | **Unlink** | Undo the link for one chat. |
 
 With linking on, a transfer of a worktree chat links it right away. If it cannot (for example the

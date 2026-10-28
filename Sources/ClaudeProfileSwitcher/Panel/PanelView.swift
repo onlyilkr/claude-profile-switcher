@@ -415,6 +415,18 @@ struct SettingsSection: View {
                           detail: linkDetail,
                           isOn: Binding(get: { state.linkChats }, set: { state.actions.setLinkChats($0) }))
             }
+            // Right under the setting, so turning it on shows what to do next.
+            if state.linkChats, state.linkableChats > 0 {
+                HStack {
+                    Text(state.linkableChats == 1 ? L("1 chat isn't linked yet", "1 sohbet henüz bağlı değil")
+                                                  : L("\(state.linkableChats) chats aren't linked yet", "\(state.linkableChats) sohbet henüz bağlı değil"))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(L("Link all", "Tümünü bağla")) { state.actions.linkAll() }
+                        .controlSize(.small)
+                }
+            }
             if state.rows.count > 1 || !state.syncPins {
                 ToggleRow(title: L("Sync pins across accounts", "Pinleri hesaplar arasında eşitle"),
                           detail: L("When an account opens, pins of the chats it shares with the account you used last follow that account, in the same order.",
