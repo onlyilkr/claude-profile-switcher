@@ -25,7 +25,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/panel-dark.png">
-    <img src="docs/images/panel-light.png" width="360" alt="The panel under the menu bar icon: five accounts with coloured badges. Default and Work have a green ring (open), Client an orange one (open, waiting for sign-in), Account 5 a spinning ring (opening), Personal none (closed). Default shows 38% and Personal 100% of the 5-hour limit. Below: Add account, the sign-in routing switch with a picker for other links, and Open at login.">
+    <img src="docs/images/panel-light.png" width="360" alt="The panel under the menu bar icon: five accounts with coloured badges. Default and Work have a green ring (open), Client an orange one (open, waiting for sign-in), Account 5 a spinning ring (opening), Personal none (closed). Default shows 38% and Personal 100% of the 5-hour limit. Below: Add account, the sign-in routing switch with a picker for other links, the experimental switch to keep worktree chats linked across accounts, Sync pins across accounts, and Open at login.">
   </picture>
 </p>
 

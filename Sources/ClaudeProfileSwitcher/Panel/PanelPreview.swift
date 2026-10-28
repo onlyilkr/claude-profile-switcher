@@ -68,7 +68,7 @@ enum PanelPreview {
                        status: Dictionary(uniqueKeysWithValues: status), isLinked: linked)
         }
         model.chats = [
-            chat("a", "Stop recurring price alerts", "sharp-liskov", [("Default", .latest), ("Work", .willSplit)]),
+            chat("a", "Speed up the search index", "brave-lovelace", [("Default", .latest), ("Work", .willSplit)]),
             chat("b", "Fix the onboarding crash", "calm-turing", [("Default", .latest), ("Work", .behind(messages: 14))]),
             chat("c", "Refactor the paywall", "kind-hopper", linked: true, [("Default", .latest), ("Work", .latest)]),
             chat("d", "Migrate the cache layer", "bold-curie", linked: true, [("Default", .latest), ("Work", .linkBroken)]),
@@ -177,7 +177,7 @@ enum PanelPreview {
 
     static func base() -> PanelState {
         let s = PanelState()
-        s.claudeVersion = "3.6556.2"
+        s.claudeVersion = "4.29.0"
         s.claudeIcon = NSWorkspace.shared.icon(forFile: "/Applications/Claude.app")
         s.claudeIcon?.size = NSSize(width: 26, height: 26)
         return s

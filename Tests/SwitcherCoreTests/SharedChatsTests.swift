@@ -4,8 +4,8 @@ import XCTest
 final class SharedChatsTests: XCTestCase {
     func testProjectDirNameMatchesClaude() {
         XCTAssertEqual(
-            TranscriptLocator.projectDirName(for: "/Users/a/workspace/shop-backend/.claude/worktrees/sharp-liskov-9f53ee"),
-            "-Users-a-workspace-shop-backend--claude-worktrees-sharp-liskov-9f53ee")
+            TranscriptLocator.projectDirName(for: "/Users/a/workspace/shop-backend/.claude/worktrees/brave-lovelace-1a2b3c"),
+            "-Users-a-workspace-shop-backend--claude-worktrees-brave-lovelace-1a2b3c")
         // Every non-alphanumeric UTF-16 unit becomes "-" (after NFC), so letters like Ğ, ü, ş and the space are replaced.
         XCTAssertEqual(TranscriptLocator.projectDirName(for: "/Users/a/Proje Ğüş"), "-Users-a-Proje----")
         // A character outside the BMP is two UTF-16 units, so it gives two dashes.
@@ -555,7 +555,7 @@ final class SharedChatScannerTests: XCTestCase {
 
 final class LiveCLISessionTests: XCTestCase {
     private let exe = "/Users/a/Library/Application Support/ClaudeProfile-Account 2/claude-code/2.1.309/x/claude.app/Contents/MacOS/claude"
-    private let id = "a4fedaa0-1111-4222-8333-444455556666"
+    private let id = "aaaa0000-1111-4222-8333-444455556666"
 
     func testCLISessionFromArgs() {
         let hit = ProcessScanner.cliSession(fromArgs: [exe, "--resume=\(id)"], executable: exe)
