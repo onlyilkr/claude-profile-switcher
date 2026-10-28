@@ -24,6 +24,8 @@ public struct PinSyncPlan: Equatable {
 public enum PinSync {
     /// The most recently used other profile that shares at least one chat with `target` (when
     /// `transfer` is given) and was used after the target. nil: nothing to sync from.
+    /// The source may be open: Claude 4.29 was seen writing a pin change to the list and the
+    /// record within seconds, so its files are current.
     public static func source(for target: Profile, among: [Profile], lastUsed: (Profile) -> Date?, transfer: ChatTransfer? = nil,
                               targetIDs: Set<String>? = nil) -> Profile? {
         let targetIDs = targetIDs ?? transfer.map { $0.chatIDs(in: target) }

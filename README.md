@@ -400,7 +400,8 @@ account, the pins of the chats it shares with the account you used last follow t
 
 - **The account you used last wins.** Among your other accounts that share at least one chat with the
   one being opened, the switcher takes the one that was used most recently, and only if it was used
-  after the account being opened.
+  after the account being opened. It may still be open: Claude 4.29 writes a pin change to disk within
+  seconds, so its pins are read as you left them.
 - **Only chats that exist in both accounts** are touched. Deleted chats are ignored.
 - **Same order.** The shared chats pinned there come first, in that order. A shared chat that is not
   pinned there is unpinned in the opened account too (unpin follows).
