@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var checkingOpenTwice = false
     /// Linked chats seen broken by the last scan that started while no link operation ran.
     private var brokenBefore: Set<String> = []
+    private var linksLedger: LinksLedger?
     /// Chats already reported as open in two accounts; cleared once the condition goes away.
     private var warnedOpenTwice: Set<String> = []
 
@@ -261,7 +262,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let startedBusy = sharedChatsModel.busy
         sharedChatsModel.loading = true
         let ledger = self.ledger(sw)
-        let scanner = self.scanner ?? SharedChatScanner(transcriptsRoot: sw.paths.transcriptsRoot, linkedSessionIDs: { ledger.linkedSessionIDs() })
+        let scanner = self.scanner ?? SharedChatScanner(transcriptsRoot: sw.paths.transcriptsRoot,
+                                                        links: { ledger.linkMap(profiles: sw.store.list(status: false), transcriptsRoot: sw.paths.transcriptsRoot) })
         self.scanner = scanner
         let profiles = sw.store.list(status: false)
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -285,12 +287,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var linkingOn: Bool { switcher?.settings["LinkWorktreeChats"] as? Bool == true }
 
+    /// One ledger for the whole app, so every linker shares its lock.
     private func ledger(_ sw: Switcher) -> LinksLedger {
-        LinksLedger(file: sw.paths.switcherHome.appendingPathComponent("links.json"))
+        if let existing = linksLedger { return existing }
+        let made = LinksLedger(file: sw.paths.switcherHome.appendingPathComponent("links.json"))
+        linksLedger = made
+        return made
     }
 
     private func makeLinker(_ sw: Switcher) -> ChatLinker {
-        ChatLinker(paths: sw.paths, ledger: ledger(sw), openFolders: { sw.store.list(status: true).filter { $0.isRunning }.map(\.path) })
+        ChatLinker(paths: sw.paths, ledger: ledger(sw),
+                   openFolders: { sw.store.list(status: true).filter { $0.isRunning || sw.isStarting($0) }.map(\.path) })
     }
 
     /// Claude moved a linked chat again: the way linking works has changed, so linking goes off.
@@ -345,6 +352,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setLinkChats(_ on: Bool) {
         guard let sw = switcher else { return }
+        brokenBefore = []
         if on {
             sw.settings.set("LinkWorktreeChats", true)
             refresh()
@@ -399,6 +407,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         runLinks([(chat, winner)])
     }
 
+    /// profileID -> the messages of its own that each forked non-winner copy has. The copy that is up to
+    /// date counts as forked too when the user kept a forked copy instead of it.
+    private func forkedCounts(_ chat: SharedChat, winner: String) -> [String: Int] {
+        var out: [String: Int] = [:]
+        guard let win = chat.copies.first(where: { $0.profileID == winner }) else { return out }
+        var winnerForked = false
+        if case .forked? = chat.status[winner] { winnerForked = true }
+        for copy in chat.copies where copy.profileID != winner {
+            if case .forked(let n)? = chat.status[copy.profileID] { out[copy.profileID] = n; continue }
+            if winnerForked, copy.hasTranscript, win.hasTranscript, copy.transcript != win.transcript,
+               case .forked(_, let own)? = try? TranscriptDiff.compare(win.transcript, copy.transcript) {
+                out[copy.profileID] = own
+            }
+        }
+        return out
+    }
+
     private func reportBusy() {
         report(L("Another link operation is running; try again in a moment.", "Başka bir bağlama işlemi sürüyor; birazdan tekrar deneyin."))
     }
@@ -415,6 +440,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let sw = switcher else { return }
         if sharedChatsModel.busy { reportBusy(); return }
         let profiles = sw.store.list(status: true)
+        // A forked copy the user chose to replace is only replaced while it still has the messages it has now.
+        var forkCounts: [String: [String: Int]] = [:]
+        for job in jobs { forkCounts[job.chat.id] = forkedCounts(job.chat, winner: job.winner) }
         var toQuit: [Profile] = []
         for job in jobs {
             for copy in job.chat.copies {
@@ -448,7 +476,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.global(qos: .userInitiated).async {
                 var results: [(SharedChat, Result<LinkReport, Error>)] = []
                 for job in jobs {
-                    do { results.append((job.chat, .success(try linker.link(job.chat, winner: job.winner, profiles: all)))) }
+                    do { results.append((job.chat, .success(try linker.link(job.chat, winner: job.winner, profiles: all, expectedForks: forkCounts[job.chat.id] ?? [:])))) }
                     catch { results.append((job.chat, .failure(error))) }
                 }
                 DispatchQueue.main.async {
@@ -460,6 +488,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         case .failure(let error): problems.append("\(chat.title): \(error.localizedDescription)")
                         case .success(let report):
                             if !report.linked.isEmpty { done.append(chat) }
+                            for (id, note) in report.warnings.sorted(by: { $0.key < $1.key }) {
+                                problems.append("\(chat.title) (\(all.first { $0.id == id }?.name ?? id)): \(note)")
+                            }
                             for (id, why) in report.skipped.sorted(by: { $0.key < $1.key }) {
                                 problems.append("\(chat.title) (\(all.first { $0.id == id }?.name ?? id)): \(why)")
                             }
@@ -644,9 +675,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 for s in thereSessions {
                     let chat = found.first { $0.id == "local_" + s.sessionID }
                     switch chat?.status[target.id] {
-                    case .behind(let n), .forked(let n):
-                        notes.append(L("\(s.title): already in '\(target.name)', but \(n) messages behind — don't continue it there",
-                                       "\(s.title): '\(target.name)' hesabında zaten var ama \(n) mesaj geride; orada devam etmeyin"))
+                    case .behind(let n):
+                        notes.append(L("\(s.title): already in '\(target.name)', but \(SharedChatsText.behind(n)) — don't continue it there",
+                                       "\(s.title): '\(target.name)' hesabında zaten var ama \(SharedChatsText.behind(n)); orada devam etmeyin"))
+                    case .forked(let n):
+                        notes.append(L("\(s.title): already in '\(target.name)', but it has diverged (\(SharedChatsText.ownMessages(n))) — don't continue it there",
+                                       "\(s.title): '\(target.name)' hesabında zaten var ama ayrışmış (\(SharedChatsText.ownMessages(n))) — orada devam etmeyin"))
                     case .willSplit:
                         split.append(s)
                         notes.append(L("\(s.title): already in '\(target.name)', same history, but it will split when continued there",
@@ -667,6 +701,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// thread and under `busy`; then rescans and hands the result lines on.
     private func bindThen(_ sessions: [CodeSession], from source: Profile, to target: Profile, then finish: @escaping ([String]) -> Void) {
         guard let sw = switcher, linkingOn, sessions.contains(where: { $0.worktreePath != nil }) else { finish([]); return }
+        if sharedChatsModel.busy {
+            // Another link operation owns `busy` and the files; binding now could overlap it. Nothing is bound.
+            let why = L("Another link operation is running; try again in a moment.", "Başka bir bağlama işlemi sürüyor; birazdan tekrar deneyin.")
+            finish(sessions.filter { $0.worktreePath != nil }.map { L("\($0.title): not linked — \(why)", "\($0.title): bağlanmadı — \(why)") })
+            return
+        }
         sharedChatsModel.busy = true
         let linker = makeLinker(sw)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -702,14 +742,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                            "Sohbetler bu hesapta da kalır. Worktree'siz sohbetler aynı geçmişi paylaşır; birini diğer hesapta sürdürmeden önce birinde bitirin. Worktree'li sohbetler için Ortak sohbetler penceresine bakın.")
         let showButton = notes.isEmpty ? nil : L("Show shared chats", "Ortak sohbetleri göster")
         if relaunch {
-            if choose(L("Chats copied", "Sohbetler kopyalandı"), text, buttons: ["OK"] + [showButton].compactMap { $0 }) == 1 { openSharedChats() }
+            if choose(L("Chats copied", "Sohbetler kopyalandı"), text, buttons: [L("OK", "Tamam")] + [showButton].compactMap { $0 }) == 1 { openSharedChats() }
             sw.launch(target)
         } else if copied + pinned > 0 {
             let pick = choose(L("Chats copied", "Sohbetler kopyalandı"), text + "\n\n" + L("Open '\(target.name)' now?", "'\(target.name)' şimdi açılsın mı?"),
                               buttons: [L("Open", "Aç"), L("Later", "Sonra")] + [showButton].compactMap { $0 })
             if pick == 0 { sw.launch(target) } else if pick == 2 { openSharedChats() }
         } else {
-            if choose(L("Nothing copied", "Hiçbir şey kopyalanmadı"), text, buttons: ["OK"] + [showButton].compactMap { $0 }) == 1 { openSharedChats() }
+            if choose(L("Nothing copied", "Hiçbir şey kopyalanmadı"), text, buttons: [L("OK", "Tamam")] + [showButton].compactMap { $0 }) == 1 { openSharedChats() }
         }
     }
 

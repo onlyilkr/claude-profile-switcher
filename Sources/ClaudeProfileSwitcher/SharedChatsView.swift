@@ -6,8 +6,8 @@ enum SharedChatsText {
     static func status(_ s: CopyStatus, linked: Bool = false) -> String {
         switch s {
         case .latest: return linked ? L("linked, up to date", "bağlı, güncel") : L("up to date", "güncel")
-        case .behind(let n): return L("\(n) messages behind", "\(n) mesaj geride")
-        case .forked(let n): return L("forked, \(n) messages of its own", "çatallanmış, kendine ait \(n) mesaj")
+        case .behind(let n): return behind(n)
+        case .forked(let n): return L("forked, \(ownMessages(n))", "çatallanmış, \(ownMessages(n))")
         case .noTranscript: return L("no history", "geçmiş yok")
         case .willSplit: return L("same history, but will split when resumed here", "aynı geçmiş, ama burada sürdürülünce ayrışacak")
         case .linkBroken: return L("linked, but Claude moved it again", "bağlı, ama Claude yine taşıdı")
@@ -15,6 +15,14 @@ enum SharedChatsText {
             return L("linked, archived only here — Claude in this account may give its folder to another chat; archive it in every account or unarchive it here",
                      "bağlı, yalnızca burada arşivli — bu hesaptaki Claude klasörünü başka bir sohbete verebilir; her hesapta arşivleyin ya da burada arşivden çıkarın")
         }
+    }
+
+    static func behind(_ n: Int) -> String {
+        L(n == 1 ? "1 message behind" : "\(n) messages behind", "\(n) mesaj geride")
+    }
+
+    static func ownMessages(_ n: Int) -> String {
+        L(n == 1 ? "1 message of its own" : "\(n) messages of its own", "kendine ait \(n) mesaj")
     }
 
     /// The account holding the history the others are measured against: its copy is up to date.

@@ -343,7 +343,8 @@ chat. If one is open, the switcher asks **Quit and sync**, then opens it again a
 - **Never open a linked chat in two accounts at once.** Both would write to one history file and it
   would branch. In testing, Claude kept an idle chat's process for about 30 minutes, so closing the window is not
   enough: wait, or quit that account. The panel warns when it sees a linked chat running in two
-  accounts.
+  accounts. This warning relies on chat processes started with `--resume`, so a chat started fresh in the last
+  minutes may not be detected.
 - **Deleting a linked chat in one account deletes its history in both.** There is only one file.
 - **Archive in every account together.** If a linked chat is archived in only one account, that
   account's Claude may give the worktree to another chat. The window marks such a chat.
