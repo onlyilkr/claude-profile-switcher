@@ -228,17 +228,17 @@ final class WorktreeLeasesTests: XCTestCase {
     func testLeasesRefuseUnknownSchema() throws {
         var v3 = sample(); v3["schemaVersion"] = 3
         try writeRaw(v3)
-        XCTAssertThrowsError(try WorktreeLeases.write(v3, to: profile))
+        XCTAssertThrowsError(try WorktreeLeases.write(v3, basedOn: v3, to: profile))
         // Root being written is checked too, not only the file on disk.
         try writeRaw(sample())
-        XCTAssertThrowsError(try WorktreeLeases.write(v3, to: profile))
+        XCTAssertThrowsError(try WorktreeLeases.write(v3, basedOn: sample(), to: profile))
         XCTAssertEqual(WorktreeLeases.read(profile), .ok(sample()))
         try Data("{ nope".utf8).write(to: WorktreeLeases.file(profile))
-        XCTAssertThrowsError(try WorktreeLeases.write(sample(), to: profile))
+        XCTAssertThrowsError(try WorktreeLeases.write(sample(), basedOn: sample(), to: profile))
     }
 
     func testLeasesNeverCreateFile() {
-        XCTAssertThrowsError(try WorktreeLeases.write(sample(), to: profile))
+        XCTAssertThrowsError(try WorktreeLeases.write(sample(), basedOn: sample(), to: profile))
         XCTAssertFalse(FileManager.default.fileExists(atPath: WorktreeLeases.file(profile).path))
     }
 
@@ -247,7 +247,7 @@ final class WorktreeLeasesTests: XCTestCase {
         try JSONSerialization.data(withJSONObject: sample()).write(to: real)
         try FileManager.default.createSymbolicLink(at: WorktreeLeases.file(profile), withDestinationURL: real)
         let changed = WorktreeLeases.releasing(name: "wt-one", from: sample())
-        try WorktreeLeases.write(changed, to: profile)
+        try WorktreeLeases.write(changed, basedOn: sample(), to: profile)
         XCTAssertNotNil(try? FileManager.default.destinationOfSymbolicLink(atPath: WorktreeLeases.file(profile).path))
         guard case .ok(let root) = WorktreeLeases.read(profile) else { return XCTFail("expected ok") }
         XCTAssertTrue(NSDictionary(dictionary: root).isEqual(to: changed))
@@ -255,5 +255,36 @@ final class WorktreeLeasesTests: XCTestCase {
         XCTAssertTrue(names.contains { $0.hasPrefix("shared-real.json.switcher-backup-") }, "\(names)")
         let attrs = try FileManager.default.attributesOfItem(atPath: real.path)
         XCTAssertEqual((attrs[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    }
+
+    func testWriteRefusesWhenFileChangedSinceRead() throws {
+        try writeRaw(sample())
+        var changedOnDisk = sample(); changedOnDisk["originUrls"] = ["z": "q"]
+        try writeRaw(changedOnDisk)
+        XCTAssertThrowsError(try WorktreeLeases.write(WorktreeLeases.releasing(name: "wt-one", from: sample()), basedOn: sample(), to: profile))
+        XCTAssertEqual(WorktreeLeases.read(profile), .ok(changedOnDisk))
+        let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        XCTAssertFalse(names.contains { $0.contains("switcher-backup") })
+    }
+
+    func testAddingReplacesUnleasedEntry() throws {
+        var root = sample()
+        var old = try XCTUnwrap((root["worktrees"] as? [String: Any])?["wt-one"] as? [String: Any])
+        old["leasedBy"] = NSNull(); old["leaseCleared"] = true
+        root["worktrees"] = ["old-key": old]
+        let entry = (name: "wt-one", value: try XCTUnwrap((sample()["worktrees"] as? [String: Any])?["wt-one"] as? [String: Any]))
+        let out = try WorktreeLeases.adding(entry, for: "local_B", to: root)
+        let wts = try XCTUnwrap(out["worktrees"] as? [String: Any])
+        XCTAssertEqual(Set(wts.keys), ["wt-one"])
+        let wt = try XCTUnwrap(wts["wt-one"] as? [String: Any])
+        XCTAssertEqual(wt["leasedBy"] as? String, "local_B")
+        XCTAssertEqual(wt["adopted"] as? Bool, true)
+        XCTAssertNil(wt["leaseCleared"])
+    }
+
+    func testAddingRefusesUnexpectedLeaseType() throws {
+        let root = sample(leasedBy: 42)
+        let entry = (name: "wt-one", value: try XCTUnwrap((sample()["worktrees"] as? [String: Any])?["wt-one"] as? [String: Any]))
+        XCTAssertThrowsError(try WorktreeLeases.adding(entry, for: "local_B", to: root))
     }
 }

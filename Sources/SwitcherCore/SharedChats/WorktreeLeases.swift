@@ -78,12 +78,15 @@ public struct WorktreeLeases {
             let sameName = key == entry.name || value["name"] as? String == entry.name
             let samePath = path != nil && (value["path"] as? String).map(normalised) == path
             guard sameName || samePath else { continue }
-            if let holder = value["leasedBy"] as? String {
-                if holder == sessionID { return root }
-                throw SwitcherError(L("The worktree \(entry.name) is already leased to another chat (\(holder)).",
-                                      "\(entry.name) çalışma ağacı zaten başka bir sohbete kiralı (\(holder))."))
+            let lease = value["leasedBy"]
+            if lease == nil || lease is NSNull {
+                stale.append(key)
+                continue
             }
-            stale.append(key)
+            if let holder = lease as? String, holder == sessionID { return root }
+            let holder = (lease as? String) ?? "?"
+            throw SwitcherError(L("The worktree \(entry.name) is already leased to another chat (\(holder)).",
+                                  "\(entry.name) çalışma ağacı zaten başka bir sohbete kiralı (\(holder))."))
         }
         for key in stale { wts.removeValue(forKey: key) }
         var value = entry.value
@@ -110,7 +113,7 @@ public struct WorktreeLeases {
 
     /// Writes through a symlink to the real file, after a dated backup, atomically, `0600`.
     /// Never creates the file and never writes a schema other than 2.
-    public static func write(_ root: [String: Any], to profile: Profile) throws {
+    public static func write(_ root: [String: Any], basedOn original: [String: Any], to profile: Profile) throws {
         let link = file(profile)
         guard FileManager.default.fileExists(atPath: link.path) else {
             throw SwitcherError(L("\(link.path) does not exist; it is never created.", "\(link.path) yok; oluşturulmaz."))
@@ -118,14 +121,24 @@ public struct WorktreeLeases {
         guard (root["schemaVersion"] as? NSNumber)?.intValue == supportedSchema else {
             throw SwitcherError(L("Unsupported worktree lease schema; nothing was written.", "Desteklenmeyen çalışma ağacı kira şeması; hiçbir şey yazılmadı."))
         }
-        guard case .ok = read(profile) else {
+        guard case .ok(let current) = read(profile) else {
             throw SwitcherError(L("\(link.path) is not a readable version 2 file; nothing was written.",
                                   "\(link.path) okunabilir bir sürüm 2 dosyası değil; hiçbir şey yazılmadı."))
+        }
+        guard NSDictionary(dictionary: current).isEqual(to: original) else {
+            throw SwitcherError(L("Claude changed its worktree list in the meantime; nothing was written. Try again.",
+                                  "Claude bu arada worktree listesini değiştirdi; hiçbir şey yazılmadı. Tekrar deneyin."))
         }
         let real = link.resolvingSymlinksInPath()
         try ChatTransfer.backUp(real)
         let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .withoutEscapingSlashes])
-        try data.write(to: real, options: .atomic)
-        chmod(real.path, 0o600)
+        let temp = real.deletingLastPathComponent().appendingPathComponent(".claude-profile-switcher-\(UUID().uuidString).tmp")
+        try data.write(to: temp)
+        chmod(temp.path, 0o600)
+        if rename(temp.path, real.path) != 0 {
+            let message = String(cString: strerror(errno))
+            unlink(temp.path)
+            throw SwitcherError(message)
+        }
     }
 }
