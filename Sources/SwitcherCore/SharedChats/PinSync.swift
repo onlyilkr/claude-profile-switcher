@@ -24,23 +24,29 @@ public struct PinSyncPlan: Equatable {
 public enum PinSync {
     /// The most recently used other profile that shares at least one chat with `target` (when
     /// `transfer` is given) and was used after the target. nil: nothing to sync from.
-    public static func source(for target: Profile, among: [Profile], lastUsed: (Profile) -> Date?, transfer: ChatTransfer? = nil) -> Profile? {
+    public static func source(for target: Profile, among: [Profile], lastUsed: (Profile) -> Date?, transfer: ChatTransfer? = nil,
+                              targetIDs: Set<String>? = nil) -> Profile? {
+        let targetIDs = targetIDs ?? transfer.map { $0.chatIDs(in: target) }
         let targetDate = lastUsed(target)
         var best: (Profile, Date)?
         for candidate in among where candidate.id != target.id {
             guard let date = lastUsed(candidate) else { continue }
             if let targetDate, date <= targetDate { continue }
             if let best, date <= best.1 { continue }
-            if let transfer, transfer.chatIDs(in: candidate).isDisjoint(with: transfer.chatIDs(in: target)) { continue }
+            if let transfer, let targetIDs, transfer.chatIDs(in: candidate).isDisjoint(with: targetIDs) { continue }
             best = (candidate, date)
         }
         return best?.0
     }
 
-    /// nil when nothing would change.
-    public static func plan(target: Profile, source: Profile, transfer: ChatTransfer) -> PinSyncPlan? {
+    /// nil when nothing would change, or when the source's config exists but cannot be read
+    /// (an unreadable source must not unpin the target). `targetIDs` saves walking the target's
+    /// folders again when the caller already has them.
+    public static func plan(target: Profile, source: Profile, transfer: ChatTransfer, targetIDs: Set<String>? = nil) -> PinSyncPlan? {
+        let sourceConfig = ChatTransfer.configFile(source)
+        if FileManager.default.fileExists(atPath: sourceConfig.path), transfer.readObject(sourceConfig) == nil { return nil }
         let sourceIDs = transfer.chatIDs(in: source)
-        let targetIDs = transfer.chatIDs(in: target)
+        let targetIDs = targetIDs ?? transfer.chatIDs(in: target)
         let shared = sourceIDs.intersection(targetIDs)
         let sourcePins = transfer.pins(of: source)
         let targetPins = transfer.pins(of: target)
@@ -51,7 +57,7 @@ public enum PinSync {
         for pin in targetPins where !sourceIDs.contains(pin) && seen.insert(pin).inserted { list.append(pin) }
 
         // Records of shared chats are checked against the new list, so a run that stopped
-        // halfway (list written, some records not) is repaired by the next one.
+        // halfway (list written, some records not) is repaired the next time pins sync into this account.
         let after = Set(list)
         let states = transfer.recordStars(of: shared, in: target)
         let star = list.filter { shared.contains($0) && states[$0]?.contains(false) == true }
@@ -72,13 +78,13 @@ public enum PinSync {
             throw SwitcherError(L("The pins changed since they were read; pins were not synced.", "Pinler okunduktan sonra değişti; eşitlenmedi."),
                                 logReason: "pins changed since planning")
         }
-        // Records-only heal: the list is already right, so the config is not rewritten (and not backed up).
+        // Records-only repair: the list is already right, so the config is not rewritten (and not backed up).
         if plan.newPins != plan.seenPins { try transfer.writePins(plan.newPins, to: target, openFolders: openFolders) }
         // The list is written; every record is tried, failures are reported once at the end.
         let failed = transfer.setStarred(true, ids: plan.star, in: target) + transfer.setStarred(false, ids: plan.unstar, in: target)
         if failed > 0 {
-            throw SwitcherError(L("The pin list was written, but \(failed) chat record(s) could not be updated; the next launch retries.",
-                                  "Pin listesi yazıldı, ancak \(failed) sohbet kaydı güncellenemedi; sonraki açılışta yeniden denenir."),
+            throw SwitcherError(L("The pin list was written, but \(failed) chat record(s) could not be updated; the next pin sync into this account retries.",
+                                  "Pin listesi yazıldı, ancak \(failed) sohbet kaydı güncellenemedi; bu hesaba bir sonraki pin eşitlemesinde yeniden denenir."),
                                 logReason: "\(failed) record(s) not updated")
         }
     }

@@ -126,6 +126,19 @@ final class PinSyncTests: XCTestCase {
         XCTAssertNil(pick([t, a], ["T": now, "A": now]), "equal is not newer")
     }
 
+    func testUnreadableSourceConfigChangesNothing() throws {
+        let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
+        let t = try profile("T", chats: ["local_a"], pins: ["local_a"])
+        try Data(#"{"mcpServers": {"#.utf8).write(to: ChatTransfer.configFile(s))
+        let before = try Data(contentsOf: ChatTransfer.configFile(t))
+        XCTAssertNil(PinSync.plan(target: t, source: s, transfer: transfer), "an unreadable source must not unpin the target")
+        XCTAssertEqual(try Data(contentsOf: ChatTransfer.configFile(t)), before)
+        XCTAssertEqual(try record(t, "local_a")["isStarred"] as? Bool, true)
+        // A readable config without the pins key still means no pins.
+        try JSONSerialization.data(withJSONObject: ["mcpServers": [:]]).write(to: ChatTransfer.configFile(s))
+        XCTAssertEqual(try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer)).newPins, [])
+    }
+
     func testUnreadableConfigWritesNothing() throws {
         let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
         let t = try profile("T", chats: ["local_a"], pins: [])

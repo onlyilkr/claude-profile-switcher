@@ -407,7 +407,7 @@ account, the pins of the chats it shares with the account you used last follow t
 - **Pins of chats only the opened account has are kept**, after the shared ones, in their own order.
 - **The starred flag on the records follows the list**, so the two stay in step.
 - **Nothing is written when nothing would change.** A run that stopped halfway (list written, some
-  records not) is repaired the next time the account opens.
+  records not) is repaired the next time pins sync into this account.
 
 This happens only when the switcher opens an account (the panel, a launcher, or `--launch`), and only
 while that account is closed; one that is already open or still starting is left alone. Opening

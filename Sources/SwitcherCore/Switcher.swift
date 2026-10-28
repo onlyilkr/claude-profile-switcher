@@ -119,7 +119,7 @@ public final class Switcher {
     private func syncPinsBeforeLaunch(_ target: Profile) {
         guard settings.syncPins else { return }
         let profiles = store.list(status: true)
-        let open = openFolders()
+        let open = profiles.filter { $0.isRunning || isStarting($0) }.map(\.path)
         Switcher.syncPinsBeforeLaunch(target: target, among: profiles, openFolders: open, enabled: true, transfer: transfer,
                                       lastUsed: { ProfileStore.lastUsed($0.path) },
                                       log: { self.log($0) }, logError: { self.logError($0) })
@@ -132,9 +132,10 @@ public final class Switcher {
         guard enabled else { return }
         let key = { (url: URL) in url.resolvingSymlinksInPath().standardizedFileURL.path }
         if openFolders.contains(where: { key($0) == key(target.path) }) { return }
-        guard let source = PinSync.source(for: target, among: among, lastUsed: lastUsed, transfer: transfer) else { return }
+        let targetIDs = transfer.chatIDs(in: target)
+        guard let source = PinSync.source(for: target, among: among, lastUsed: lastUsed, transfer: transfer, targetIDs: targetIDs) else { return }
         do {
-            guard let plan = PinSync.plan(target: target, source: source, transfer: transfer) else { return }
+            guard let plan = PinSync.plan(target: target, source: source, transfer: transfer, targetIDs: targetIDs) else { return }
             try PinSync.apply(plan, to: target, transfer: transfer, openFolders: openFolders)
             log("Pins synced from '\(source.name)' to '\(target.name)'")
         } catch {

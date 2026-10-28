@@ -46,7 +46,7 @@ optionally, their worktrees and history in step.
   switcher opens a closed account, the pins of the chats it shares with the account you used last
   follow that account, in the same order. Pins of chats only the opened account has are kept after
   them, and a chat unpinned there is unpinned here. The starred flag on the chat records follows the
-  list, a run that stopped halfway is repaired the next time, and nothing is written when nothing
+  list, a run that stopped halfway is repaired the next time pins sync into that account, and nothing is written when nothing
   changes. Backups come first; a failure is logged as a fixed reason without chat names or paths and
   never stops the account from opening. Opening Claude.app directly skips it.
 
