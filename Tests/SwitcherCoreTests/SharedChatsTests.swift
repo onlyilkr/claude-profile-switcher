@@ -31,3 +31,87 @@ final class SharedChatsTests: XCTestCase {
         XCTAssertEqual(s.path, "/tmp/claude-projects/-a-b/sid-1")
     }
 }
+
+final class TranscriptDiffTests: XCTestCase {
+    private var dir: URL!
+
+    override func setUpWithError() throws {
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent("transcript-diff-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    private func write(_ name: String, _ lines: [String], trailing: String = "") throws -> URL {
+        let url = dir.appendingPathComponent(name)
+        let text = lines.map { $0 + "\n" }.joined() + trailing
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    private func msg(_ i: Int) -> String { "{\"type\":\"user\",\"uuid\":\"u\(i)\",\"text\":\"hello \(i)\"}" }
+    private var common: [String] { (1...3).map(msg) }
+
+    func testIdenticalFiles() throws {
+        let a = try write("a.jsonl", common), b = try write("b.jsonl", common)
+        XCTAssertEqual(try TranscriptDiff.compare(a, b), .identical)
+    }
+
+    func testMetadataOnlyTailIsInSync() throws {
+        let a = try write("a.jsonl", common)
+        let b = try write("b.jsonl", common + ["{\"type\":\"cost-state\"}"])
+        XCTAssertEqual(try TranscriptDiff.compare(a, b), .identical)
+    }
+
+    func testBehindLikeTheRealCase() throws {
+        let q = "{\"type\":\"queue-operation\",\"op\":\"enqueue\"}"
+        let a = try write("a.jsonl", common + [q, q] + (4...7).map(msg))
+        let b = try write("b.jsonl", common + ["{\"type\":\"cost-state\",\"n\":1}", "{\"type\":\"cost-state\",\"n\":2}"])
+        XCTAssertEqual(try TranscriptDiff.compare(a, b), .firstAhead(messages: 4))
+        XCTAssertEqual(try TranscriptDiff.compare(b, a), .secondAhead(messages: 4))
+    }
+
+    func testForked() throws {
+        let a = try write("a.jsonl", common + [msg(10), msg(11)])
+        let b = try write("b.jsonl", common + [msg(20)])
+        XCTAssertEqual(try TranscriptDiff.compare(a, b), .forked(first: 2, second: 1))
+    }
+
+    func testPartialLastLineIsIgnored() throws {
+        let a = try write("a.jsonl", common)
+        let b = try write("b.jsonl", common, trailing: "{\"uuid\":\"x\"")
+        XCTAssertEqual(try TranscriptDiff.compare(a, b), .identical)
+    }
+
+    func testCorruptLineCountsAsMeta() throws {
+        XCTAssertFalse(TranscriptDiff.isMessageLine(Data("not json".utf8)))
+        XCTAssertFalse(TranscriptDiff.isMessageLine(Data("[1,2]".utf8)))
+        XCTAssertFalse(TranscriptDiff.isMessageLine(Data("{\"uuid\":5}".utf8)))
+        XCTAssertTrue(TranscriptDiff.isMessageLine(Data("{\"uuid\":\"x\"}".utf8)))
+        let a = try write("a.jsonl", common)
+        let b = try write("b.jsonl", common + ["not json"])
+        XCTAssertEqual(try TranscriptDiff.compare(a, b), .identical)
+    }
+
+    func testCompareStreamsLargeFiles() throws {
+        let line = "{\"type\":\"user\",\"uuid\":\"" + String(repeating: "a", count: 990) + "\"}\n"
+        let chunk = Data(String(repeating: line, count: 1000).utf8)   // ~1 MB
+        func build(_ name: String, tail: String) throws -> URL {
+            let url = dir.appendingPathComponent(name)
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+            let h = try FileHandle(forWritingTo: url)
+            for _ in 0..<39 { h.write(chunk) }
+            h.write(Data(tail.utf8))
+            try h.close()
+            return url
+        }
+        let a = try build("big-a.jsonl", tail: String(repeating: line, count: 1000))
+        let b = try build("big-b.jsonl", tail: String(repeating: "{\"type\":\"cost-state\"}\n", count: 10))
+        let start = Date()
+        let rel = try TranscriptDiff.compare(a, b)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2)
+        XCTAssertEqual(rel, .firstAhead(messages: 1000))
+    }
+}
