@@ -81,6 +81,7 @@ struct PanelActions {
     var setLogin: (Bool) -> Void = { _ in }
     var setOtherLinks: (String) -> Void = { _ in }
     var decideRouting: (Bool) -> Void = { _ in }
+    var openSharedChats: () -> Void = {}
     var quit: () -> Void = {}
     var downloadClaude: () -> Void = {}
 }
@@ -100,6 +101,13 @@ final class PanelState: ObservableObject {
     @Published var errorMessage: String?
     /// Hidden until every open account is measured again, then shown the next time.
     @Published var usageNoticeDismissed = false
+
+    /// Chats that differ between accounts, from the last scan (never from the 1.5 s refresh).
+    @Published var divergedChats = 0
+    @Published var divergedChatIDs: Set<String> = []
+    /// The set of differing chats the user closed the notice for; it comes back when the set changes.
+    @Published var sharedChatsNoticeDismissedFor: Set<String> = []
+    var showSharedChatsNotice: Bool { divergedChats > 0 && sharedChatsNoticeDismissedFor != divergedChatIDs }
 
     /// Hover and the arrow keys move one highlight, as in a menu.
     @Published var highlighted: String?

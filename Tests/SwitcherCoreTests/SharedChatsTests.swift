@@ -519,3 +519,21 @@ final class SharedChatScannerTests: XCTestCase {
         XCTAssertTrue(scanner().scan([profileA, profileB]).isEmpty)
     }
 }
+
+final class LiveCLISessionTests: XCTestCase {
+    private let exe = "/Users/a/Library/Application Support/ClaudeProfile-Account 2/claude-code/2.1.309/x/claude.app/Contents/MacOS/claude"
+    private let id = "a4fedaa0-1111-4222-8333-444455556666"
+
+    func testCLISessionFromArgs() {
+        let hit = ProcessScanner.cliSession(fromArgs: [exe, "--resume=\(id)"], executable: exe)
+        XCTAssertEqual(hit?.cliSessionID, id)
+        XCTAssertEqual(hit?.profileDir, "/Users/a/Library/Application Support/ClaudeProfile-Account 2")
+        XCTAssertEqual(ProcessScanner.cliSession(fromArgs: [exe, "--verbose", "--resume", id], executable: exe)?.cliSessionID, id)
+        // Not Claude's bundled Code binary.
+        XCTAssertNil(ProcessScanner.cliSession(fromArgs: ["/usr/local/bin/claude", "--resume=\(id)"], executable: "/usr/local/bin/claude"))
+        // No resume argument, or nothing after "--resume".
+        XCTAssertNil(ProcessScanner.cliSession(fromArgs: [exe, "--verbose"], executable: exe))
+        XCTAssertNil(ProcessScanner.cliSession(fromArgs: [exe, "--resume"], executable: exe))
+        XCTAssertNil(ProcessScanner.cliSession(fromArgs: [exe, "--resume="], executable: exe))
+    }
+}

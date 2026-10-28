@@ -52,6 +52,50 @@ public enum ProcessScanner {
         return value
     }
 
+    /// The Claude Code processes of this user that are running a chat: the account's folder
+    /// (the path before "/claude-code/") and the chat's CLI session id. Reads every process of
+    /// this user, so call it off the main thread.
+    public static func liveCLISessions() -> [(pid: pid_t, profileDir: String, cliSessionID: String)] {
+        let me = getuid()
+        let count = proc_listallpids(nil, 0)
+        guard count > 0 else { return [] }
+        var pids = [pid_t](repeating: 0, count: Int(count) + 64)
+        let got = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size))
+        guard got > 0 else { return [] }
+        var found: [(pid: pid_t, profileDir: String, cliSessionID: String)] = []
+        for pid in pids.prefix(Int(got)) where pid > 0 {
+            guard owner(pid: pid) == me, let exe = executablePath(pid: pid), exe.contains("/claude-code/"),
+                  let (args, _) = argsAndEnv(pid: pid),
+                  let hit = cliSession(fromArgs: args, executable: exe) else { continue }
+            found.append((pid, hit.profileDir, hit.cliSessionID))
+        }
+        return found
+    }
+
+    /// A Claude Code process of an account: executable `<profileDir>/claude-code/<version>/<hash>/claude.app/Contents/MacOS/claude`
+    /// run with `--resume=<id>` (or `--resume <id>`). nil for anything else.
+    public static func cliSession(fromArgs args: [String], executable: String) -> (profileDir: String, cliSessionID: String)? {
+        guard executable.hasSuffix("/claude.app/Contents/MacOS/claude"),
+              let marker = executable.range(of: "/claude-code/") else { return nil }
+        let profileDir = String(executable[..<marker.lowerBound])
+        guard !profileDir.isEmpty else { return nil }
+        var id: String?
+        var i = 1
+        while i < args.count {
+            let a = args[i]
+            if a == "--" { break }
+            if a.hasPrefix("--resume=") {
+                id = String(a.dropFirst("--resume=".count))
+            } else if a == "--resume", i + 1 < args.count {
+                id = args[i + 1]
+                i += 1
+            }
+            i += 1
+        }
+        guard let id, !id.isEmpty, !id.hasPrefix("-") else { return nil }
+        return (profileDir, id)
+    }
+
     static func owner(pid: pid_t) -> uid_t? {
         var info = proc_bsdinfo()
         let size = Int32(MemoryLayout<proc_bsdinfo>.size)

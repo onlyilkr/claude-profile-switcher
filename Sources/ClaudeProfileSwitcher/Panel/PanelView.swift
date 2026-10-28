@@ -18,6 +18,11 @@ struct PanelView: View {
                 if state.usagePaused && !state.usageNoticeDismissed {
                     UsagePausedNotice(openCount: state.openCount) { state.usageNoticeDismissed = true }
                 }
+                if state.showSharedChatsNotice {
+                    SharedChatsNotice(count: state.divergedChats, show: state.actions.openSharedChats) {
+                        state.sharedChatsNoticeDismissedFor = state.divergedChatIDs
+                    }
+                }
                 accounts
                 PanelDivider()
                 SettingsSection(state: state)
@@ -487,6 +492,31 @@ struct UsagePausedNotice: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
+            Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(L("Dismiss", "Kapat"))
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.06)))
+        .padding(.horizontal, 10)
+        .padding(.bottom, 6)
+    }
+}
+
+struct SharedChatsNotice: View {
+    let count: Int
+    let show: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "arrow.triangle.branch").foregroundStyle(.secondary)
+            Text(L("\(count) chats differ between accounts", "\(count) sohbet hesaplar arasında farklı"))
+                .font(.system(size: 12, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button(L("Show", "Göster"), action: show).controlSize(.small)
             Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)

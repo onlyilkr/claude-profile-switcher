@@ -98,6 +98,16 @@ enum PanelPreview {
             s.routingOn = true
             return s
         }),
+        ("shared-chats", {
+            let s = base()
+            s.rows = [
+                row(Profile.defaultID, .open, last: 0, session: 38),
+                row("Work", .closed, color: 0, last: 3600, session: 20),
+            ]
+            s.divergedChats = 2
+            s.divergedChatIDs = ["local_a", "local_b"]
+            return s
+        }),
         ("first-run", {
             let s = base()
             s.rows = [row(Profile.defaultID, .open, last: 0)]

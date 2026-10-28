@@ -14,6 +14,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windows: [NSWindow] = []
     /// Accounts launched from here that have not shown up as a process yet.
     private var opening: [String: Date] = [:]
+    /// Last scan for chats that live in several accounts. Scans run off the main thread, only
+    /// when the panel opens, after a transfer and from the Shared chats window.
+    private var sharedChats: [SharedChat] = []
+    private var scanner: SharedChatScanner?
+    private var scanning = false
+    private var scanAgain = false
+    private let sharedChatsModel = SharedChatsModel()
+    private weak var sharedChatsWindow: NSWindow?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Everything before any URL arrives: when Launch Services starts the app to hand it
@@ -29,9 +37,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         panel = PanelController(state: state, button: statusItem.button)
-        panel.onShow = { [weak self] in self?.refresh() }
+        panel.onShow = { [weak self] in self?.refresh(); self?.scanSharedChats() }
         panel.onTick = { [weak self] in self?.refresh() }
         wireActions()
+        sharedChatsModel.refresh = { [weak self] in self?.scanSharedChats() }
+        sharedChatsModel.openAccount = { [weak self] id in self?.open(id, keepPanel: true) }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -122,6 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var a = PanelActions()
         a.open = { [weak self] id in self?.open(id) }
         a.add = { [weak self] in self?.addAccount() }
+        a.openSharedChats = { [weak self] in self?.panel.close(); self?.openSharedChats() }
         a.openUsage = { [weak self] id in self?.openUsage(id) }
         a.rename = { [weak self] id, name in
             guard let sw = self?.switcher, let p = sw.store.resolve(id) else { return nil }
@@ -180,9 +191,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.actions = a
     }
 
-    private func open(_ id: String, fromURL: Bool = false) {
+    private func open(_ id: String, fromURL: Bool = false, keepPanel: Bool = false) {
         guard let sw = switcher, let p = sw.store.resolve(id, status: true) else { return }
-        panel.close()
+        if !keepPanel { panel.close() }
         if !p.isRunning { opening[p.id] = Date() }
         sw.launch(p, expectSignIn: !fromURL) { [weak self] result in
             if case .failure(let error) = result {
@@ -220,6 +231,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             report(L("Could not add an account: \(error.localizedDescription)", "Hesap eklenemedi: \(error.localizedDescription)"))
         }
+    }
+
+    // MARK: Shared chats
+
+    /// Scans on a background queue and publishes on the main thread. A request that arrives
+    /// during a scan runs once more afterwards, so the result is never older than the request.
+    private func scanSharedChats() {
+        guard let sw = switcher else { return }
+        if scanning { scanAgain = true; return }
+        scanning = true
+        sharedChatsModel.loading = true
+        let scanner = self.scanner ?? SharedChatScanner(transcriptsRoot: sw.paths.transcriptsRoot)
+        self.scanner = scanner
+        let profiles = sw.store.list(status: false)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let found = scanner.scan(profiles)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.scanning = false
+                self.sharedChats = found
+                let diverged = found.filter(\.diverged)
+                self.set(\.divergedChats, diverged.count)
+                self.set(\.divergedChatIDs, Set(diverged.map(\.id)))
+                self.sharedChatsModel.chats = found.sorted { $0.diverged && !$1.diverged }
+                if self.scanAgain { self.scanAgain = false; self.scanSharedChats() } else { self.sharedChatsModel.loading = false }
+            }
+        }
+    }
+
+    private func openSharedChats() {
+        scanSharedChats()
+        if let window = sharedChatsWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        let window = NSWindow(contentViewController: NSHostingController(rootView: SharedChatsView(model: sharedChatsModel)))
+        window.title = L("Shared chats", "Ortak sohbetler")
+        window.styleMask = [.titled, .closable, .resizable]
+        window.isReleasedWhenClosed = false
+        window.center()
+        sharedChatsWindow = window
+        windows.append(window)
+        var token: NSObjectProtocol?
+        token = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] note in
+            self?.windows.removeAll { $0 === note.object as? NSWindow }
+            if let token { NotificationCenter.default.removeObserver(token) }
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
     }
 
     // MARK: Chat transfer
@@ -313,6 +374,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .failed(let why): skipped.append("\(s.title): \(why)")
             }
         }
+        if copied > 0 { scanSharedChats() }
         // Pins follow the chats copied now, in the source's order. A chat that was already
         // there keeps whatever pin state the user gave it in that account.
         var pinned = 0
