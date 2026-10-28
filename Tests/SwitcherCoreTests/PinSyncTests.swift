@@ -232,12 +232,40 @@ final class PinSyncTests: XCTestCase {
     func testLaunchLogsErrorWithoutIdsAndContinues() throws {
         let s = try profile("S", chats: ["local_secret"], pins: ["local_secret"])
         let t = try profile("T", chats: ["local_secret"], pins: [])
-        // The target's own config is not parseable: nothing is written, one message is logged.
+        // The target's own config is not parseable: the list write is refused, which reaches the error branch.
         try Data("not json".utf8).write(to: ChatTransfer.configFile(t))
-        let lines = runLaunchSync(t, s)
+        let lines = runLaunchSync(t, s)   // returns normally: the launch goes on
         XCTAssertTrue(lines.info.isEmpty)
-        XCTAssertLessThanOrEqual(lines.errors.count, 1)
-        XCTAssertFalse(lines.errors.joined().contains("local_secret"))
+        XCTAssertEqual(lines.errors.count, 1)
+        let line = try XCTUnwrap(lines.errors.first)
+        XCTAssertTrue(line.hasPrefix("Pin sync for 'T' failed"))
+        XCTAssertFalse(line.contains("local_secret"))
+        XCTAssertFalse(line.contains(home.path), "no absolute path in the log")
+        XCTAssertFalse(line.contains("/"), "no path at all in the log: \(line)")
+        XCTAssertEqual(try String(contentsOf: ChatTransfer.configFile(t)), "not json", "nothing was written")
+    }
+
+    func testRedactPathsHidesHomeAndOtherAbsolutePaths() {
+        let r = { (m: String) in Switcher.redactPaths(m, home: "/Users/someone") }
+        XCTAssertEqual(r("/Users/someone/Library/Application Support/Claude/c.json is not valid JSON, so the pins were not written."),
+                       "~/Library/Application <path> is not valid JSON, so the pins were not written.".replacingOccurrences(of: "<path>", with: "Support/Claude/c.json"))
+        XCTAssertEqual(r("The pins live in /Volumes/Disk/Claude-2/c.json, which belongs to the open profile at /Users/someone/x."),
+                       "The pins live in <path>, which belongs to the open profile at ~/x.")
+        XCTAssertEqual(r("nothing here, a/b and/or c"), "nothing here, a/b and/or c")
+    }
+
+    func testRecordsOnlyHealDoesNotRewriteOrBackUpTheConfig() throws {
+        let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
+        let t = try profile("T", chats: ["local_a"], pins: ["local_a"], starred: [])   // list right, record not starred
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        XCTAssertEqual(plan.newPins, plan.seenPins)
+        let config = ChatTransfer.configFile(t)
+        let before = try Data(contentsOf: config)
+        try PinSync.apply(plan, to: t, transfer: transfer, openFolders: [])
+        XCTAssertEqual(try record(t, "local_a")["isStarred"] as? Bool, true)
+        XCTAssertEqual(try Data(contentsOf: config), before, "the config is not rewritten")
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: config.deletingLastPathComponent().path)
+        XCTAssertTrue(siblings.filter { $0.contains("switcher-backup") }.isEmpty, "and not backed up")
     }
 
     func testSyncPinsSettingDefaultsOn() throws {

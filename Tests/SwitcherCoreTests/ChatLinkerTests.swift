@@ -410,6 +410,71 @@ final class ChatLinkerTests: XCTestCase {
         XCTAssertEqual(try obj(recordURL(lose))["cwd"] as? String, winCwd)
     }
 
+    func testPickedForkWhereLatestIsLoserRefusesGrowthAfterScan() throws {
+        try diverged()
+        // Default is the furthest copy (reference); Two forked off it. The user keeps Two, so Default loses.
+        try transcriptText(winCwd, uuidLines(["c", "w1", "w2"]) + "{\"pad\":\"xxxxxxxxxxxxxxxx\"}\n")
+        try transcriptText(loseCwd, uuidLines(["c", "l1"]))
+        let c = try chat()
+        XCTAssertEqual(c.status["Default"], .latest)
+        XCTAssertEqual(c.status["Two"], .forked(messages: 1))
+        let expected = LinkPolicy.expectedForks(c, winner: "Two")
+        XCTAssertEqual(expected, ["Default": 2], "the up-to-date copy's own messages, as counted when the chat was scanned")
+        // The up-to-date copy is continued between the scan and the click.
+        try transcriptText(winCwd, uuidLines(["c", "w1", "w2", "w3"]) + "{\"pad\":\"xxxxxxxxxxxxxxxx\"}\n")
+        let before = try Data(contentsOf: recordURL(win))
+        let report = try linker().link(c, winner: "Two", profiles: [win, lose], expectedForks: expected)
+        XCTAssertEqual(report, LinkReport(linked: [], skipped: ["Default": staleMessage]))
+        XCTAssertEqual(try Data(contentsOf: recordURL(win)), before)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: transcript(winCwd).path))
+        XCTAssertTrue(backupFiles().isEmpty)
+        XCTAssertTrue(ledger().records().isEmpty)
+    }
+
+    func testPickedForkWhereLatestIsLoserIsLinkedWhenUnchanged() throws {
+        try diverged()
+        try transcriptText(winCwd, uuidLines(["c", "w1", "w2"]) + "{\"pad\":\"xxxxxxxxxxxxxxxx\"}\n")
+        try transcriptText(loseCwd, uuidLines(["c", "l1"]))
+        let c = try chat()
+        let report = try linker().link(c, winner: "Two", profiles: [win, lose], expectedForks: LinkPolicy.expectedForks(c, winner: "Two"))
+        XCTAssertEqual(report.linked, ["Default"])
+    }
+
+    func testPickedForkWithoutScanTimeCountIsRefused() throws {
+        try diverged()
+        try transcriptText(winCwd, uuidLines(["c", "w1", "w2"]) + "{\"pad\":\"xxxxxxxxxxxxxxxx\"}\n")
+        try transcriptText(loseCwd, uuidLines(["c", "l1"]))
+        let c = try chat()
+        // A chat value without the scan-time numbers (e.g. built by hand): nothing to check against, so refused.
+        let bare = SharedChat(id: c.id, cliSessionID: c.cliSessionID, title: c.title, folder: c.folder, copies: c.copies, status: c.status, isLinked: c.isLinked)
+        let expected = LinkPolicy.expectedForks(bare, winner: "Two")
+        XCTAssertNil(expected["Default"])
+        XCTAssertEqual(try linker().link(bare, winner: "Two", profiles: [win, lose], expectedForks: expected).skipped["Default"], staleMessage)
+    }
+
+    func testSharedFileProtectionIndependentOfOrder() throws {
+        try diverged()
+        // Four sorts before Two; both use the loser's folder and so one history file. Two is open by the time of the write.
+        let four = Profile(id: "Four", name: "Four", path: paths.profileDir(id: "Four"))
+        try FileManager.default.createDirectory(at: four.path, withIntermediateDirectories: true)
+        try writeJSON(record(cwd: loseCwd), recordURL(four))
+        try writeJSON(leaseFile(["wt-lose": lease(loseCwd, name: "wt-lose", by: chatID)]), WorktreeLeases.file(four))
+        defer { chmod(recordURL(four).deletingLastPathComponent().path, 0o700) }
+        let c = try XCTUnwrap(SharedChatScanner(transcriptsRoot: paths.transcriptsRoot).scan([win, lose, four]).first { $0.id == chatID })
+        // The first two checks (while planning) see nothing open; later ones see Two open.
+        var calls = 0
+        let late = ChatLinker(paths: paths, ledger: ledger(), live: { [] }, openFolders: {
+            calls += 1
+            return calls > 3 ? [self.lose.path] : []
+        })
+        let report = try late.link(c, winner: "Default", profiles: [win, lose, four])
+        XCTAssertNotNil(report.skipped["Two"])
+        XCTAssertEqual(report.linked, ["Four"])
+        XCTAssertNotNil(report.warnings["Four"], "its old history file is kept for Two")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: transcript(loseCwd).path))
+        XCTAssertTrue(backupFiles().filter { $0.hasSuffix(".jsonl") }.isEmpty)
+    }
+
     func testLinkRefusesWhenWinnerRecordPointsAtAnotherHistory() throws {
         try diverged()
         let c = try chat()

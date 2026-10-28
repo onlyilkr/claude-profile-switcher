@@ -32,6 +32,14 @@ public enum CopyStatus: Equatable {
     case archivedHereOnly
 }
 
+/// The own messages of a forked copy and of the reference copy, as counted when the chat was scanned:
+/// `reference` = messages only the reference has, `other` = messages only the forked copy has.
+public struct ForkCount: Equatable {
+    public let reference: Int
+    public let other: Int
+    public init(reference: Int, other: Int) { self.reference = reference; self.other = other }
+}
+
 public struct SharedChat: Equatable, Identifiable {
     /// The record's sessionId.
     public let id: String
@@ -42,11 +50,13 @@ public struct SharedChat: Equatable, Identifiable {
     /// profileID -> status
     public let status: [String: CopyStatus]
     public let isLinked: Bool
+    /// profileID -> the relation numbers against the reference copy, for every forked copy, taken at scan time.
+    public let forkCounts: [String: ForkCount]
 
     public init(id: String, cliSessionID: String, title: String, folder: String, copies: [ChatCopy],
-                status: [String: CopyStatus], isLinked: Bool) {
+                status: [String: CopyStatus], isLinked: Bool, forkCounts: [String: ForkCount] = [:]) {
         self.id = id; self.cliSessionID = cliSessionID; self.title = title; self.folder = folder
-        self.copies = copies; self.status = status; self.isLinked = isLinked
+        self.copies = copies; self.status = status; self.isLinked = isLinked; self.forkCounts = forkCounts
     }
 
     public var diverged: Bool {
@@ -136,13 +146,16 @@ public final class SharedChatScanner {
         let copies = found.map(\.copy).sorted { $0.profileID < $1.profileID }
         let reference = referenceCopy(copies)
         var status: [String: CopyStatus] = [:]
+        var forkCounts: [String: ForkCount] = [:]
         for copy in copies {
             guard copy.hasTranscript, let ref = reference else { status[copy.profileID] = .noTranscript; continue }
             if copy.transcript == ref.transcript { status[copy.profileID] = .latest; continue }
             switch relation(ref.transcript, copy.transcript) {
             case .some(.identical): status[copy.profileID] = .latest
             case .some(.firstAhead(let n)): status[copy.profileID] = .behind(messages: n)
-            case .some(.forked(_, let own)): status[copy.profileID] = .forked(messages: own)
+            case .some(.forked(let first, let own)):
+                status[copy.profileID] = .forked(messages: own)
+                forkCounts[copy.profileID] = ForkCount(reference: first, other: own)
             // secondAhead cannot remain after the reference search; an unreadable file counts as unusable.
             case .some(.secondAhead), .none: status[copy.profileID] = .noTranscript
             }
@@ -169,7 +182,7 @@ public final class SharedChatScanner {
         let shown = found.max { $0.copy.lastActivity < $1.copy.lastActivity }!
         let folder = URL(fileURLWithPath: (reference ?? copies[0]).cwd).lastPathComponent
         return SharedChat(id: id, cliSessionID: (reference.flatMap { r in found.first { $0.copy.profileID == r.profileID } } ?? shown).cliSessionID,
-                          title: shown.title, folder: folder, copies: copies, status: status, isLinked: isLinked)
+                          title: shown.title, folder: folder, copies: copies, status: status, isLinked: isLinked, forkCounts: forkCounts)
     }
 
     /// The copy furthest along: start with the largest history, and let any copy found ahead of the

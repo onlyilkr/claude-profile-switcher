@@ -44,6 +44,26 @@ public enum LinkPolicy {
         return (pool.first { $0.leaseHeld == true } ?? pool.first)?.profileID
     }
 
+    /// profileID -> the messages of its own that each non-winner copy had when the chat was scanned, for the
+    /// copies the linker may only replace while they still have exactly those: forked copies, and the
+    /// up-to-date copy when the user kept a forked copy instead of it. Taken only from the scan, never
+    /// from the files now; a copy whose number the scan did not record is left out, and the linker refuses it.
+    public static func expectedForks(_ chat: SharedChat, winner: String) -> [String: Int] {
+        var out: [String: Int] = [:]
+        guard let win = chat.copies.first(where: { $0.profileID == winner }) else { return out }
+        let winnerForked = chat.forkCounts[winner] != nil
+        for copy in chat.copies where copy.profileID != winner {
+            if let fork = chat.forkCounts[copy.profileID] { out[copy.profileID] = fork.other; continue }
+            // An up-to-date copy shares the reference's history: its own messages (against the forked winner)
+            // are the reference's own messages against that fork.
+            if winnerForked, chat.status[copy.profileID] == .latest, copy.hasTranscript, win.hasTranscript,
+               copy.transcript != win.transcript, let fork = chat.forkCounts[winner] {
+                out[copy.profileID] = fork.reference
+            }
+        }
+        return out
+    }
+
     /// Linked chats whose Claude Code process runs under two or more different account folders.
     public static func openInSeveral(_ chats: [SharedChat], live: [(pid: pid_t, profileDir: String, cliSessionID: String)]) -> [SharedChat] {
         var dirs: [String: Set<String>] = [:]

@@ -71,7 +71,8 @@ public enum PinSync {
         guard transfer.pins(of: target) == plan.seenPins else {
             throw SwitcherError(L("The pins changed since they were read; pins were not synced.", "Pinler okunduktan sonra değişti; eşitlenmedi."))
         }
-        try transfer.writePins(plan.newPins, to: target, openFolders: openFolders)
+        // Records-only heal: the list is already right, so the config is not rewritten (and not backed up).
+        if plan.newPins != plan.seenPins { try transfer.writePins(plan.newPins, to: target, openFolders: openFolders) }
         // The list is written; every record is tried, failures are reported once at the end.
         let failed = transfer.setStarred(true, ids: plan.star, in: target) + transfer.setStarred(false, ids: plan.unstar, in: target)
         if failed > 0 {

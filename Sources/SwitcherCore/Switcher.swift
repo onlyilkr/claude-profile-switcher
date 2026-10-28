@@ -15,7 +15,20 @@ public final class Switcher {
 
     /// Launches this process started that have not shown up as a process yet. Starting a
     /// profile twice in that window would put two copies on one folder.
+    /// Read from background threads too (the linker's open-folder check runs off the main thread), so
+    /// every access goes through `startingLock`; a main-thread snapshot would miss launches made during a long link.
     private var starting: [String: Date] = [:]
+    private let startingLock = NSLock()
+
+    private func setStarting(_ id: String, _ date: Date?) {
+        startingLock.lock(); defer { startingLock.unlock() }
+        starting[id] = date
+    }
+
+    private func startedAt(_ id: String) -> Date? {
+        startingLock.lock(); defer { startingLock.unlock() }
+        return starting[id]
+    }
 
     public init(paths: Paths = Paths(), ownBundleID: String? = nil, claudePath: String? = nil) throws {
         self.paths = paths
@@ -54,7 +67,7 @@ public final class Switcher {
                        completion: ((Result<LaunchResult, Error>) -> Void)? = nil) {
         refreshClaude()
         if let pid = store.isRunning(target) {
-            starting[target.id] = nil
+            setStarting(target.id, nil)
             if let link { send(link, to: pid) }
             Focus.bring(pid: pid)
             completion?(.success(.focused))
@@ -83,11 +96,11 @@ public final class Switcher {
 
         syncPinsBeforeLaunch(target)
 
-        starting[target.id] = Date()
+        setStarting(target.id, Date())
         let done: (NSRunningApplication?, Error?) -> Void = { _, error in
             DispatchQueue.main.async {
                 if let error {
-                    self.starting[target.id] = nil
+                    self.setStarting(target.id, nil)
                     completion?(.failure(error))
                 } else {
                     completion?(.success(.started))
@@ -106,7 +119,7 @@ public final class Switcher {
     private func syncPinsBeforeLaunch(_ target: Profile) {
         guard settings.syncPins else { return }
         let profiles = store.list(status: true)
-        let open = profiles.filter { $0.isRunning || isStarting($0) }.map(\.path)
+        let open = openFolders()
         Switcher.syncPinsBeforeLaunch(target: target, among: profiles, openFolders: open, enabled: true, transfer: transfer,
                                       lastUsed: { ProfileStore.lastUsed($0.path) },
                                       log: { self.log($0) }, logError: { self.logError($0) })
@@ -125,16 +138,22 @@ public final class Switcher {
             try PinSync.apply(plan, to: target, transfer: transfer, openFolders: openFolders)
             log("Pins synced from '\(source.name)' to '\(target.name)'")
         } catch let error as SwitcherError {
-            logError("Pin sync for '\(target.name)' failed: \(error.message)")
+            logError("Pin sync for '\(target.name)' failed: \(Switcher.redactPaths(error.message))")
         } catch {
             logError("Pin sync for '\(target.name)' failed: \(Switcher.describe(error))")
         }
     }
 
+    /// The folders of every profile that is running or starting: nothing may be written to these.
+    /// Safe to call from any thread.
+    public func openFolders() -> [URL] {
+        store.list(status: true).filter { $0.isRunning || isStarting($0) }.map(\.path)
+    }
+
     /// Launched from here in the last 20 s and not visible as a process yet. Treated as
     /// open by everything that must not touch an open profile.
     public func isStarting(_ target: Profile) -> Bool {
-        guard let since = starting[target.id] else { return false }
+        guard let since = startedAt(target.id) else { return false }
         return Date().timeIntervalSince(since) < 20 && store.isRunning(target) == nil
     }
 
@@ -358,6 +377,16 @@ public final class Switcher {
     /// An error as its domain and code only. Its message can quote the URL an operation
     /// was about, and a claude:// sign-in link carries a one-time code; logs are pasted
     /// into public bug reports.
+    /// For the error log: the home folder becomes `~`, any other absolute path becomes `<path>`, so a
+    /// message that names a config file does not leave the user's folder layout in a log.
+    static func redactPaths(_ message: String, home: String = NSHomeDirectory()) -> String {
+        var out = message
+        let h = home.hasSuffix("/") && home.count > 1 ? String(home.dropLast()) : home
+        if h.count > 1 { out = out.replacingOccurrences(of: h + "/", with: "~/").replacingOccurrences(of: h, with: "~") }
+        guard let regex = try? NSRegularExpression(pattern: "(?<![\\w~.])/[^/\\s'\",;]+(?:/[^/\\s'\",;]+)*") else { return out }
+        return regex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: "<path>")
+    }
+
     public static func describe(_ error: Error) -> String {
         let e = error as NSError
         return "\(e.domain) \(e.code)"

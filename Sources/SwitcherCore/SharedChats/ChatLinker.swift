@@ -170,33 +170,40 @@ public struct ChatLinker {
         }
 
         let stamp = String(Int(Date().timeIntervalSince1970 * 1000))
-        let planned = Set(plans.map(\.profile.id))
+        // Pass 1: re-check every account right before anything is written, so the set of accounts that
+        // will definitely be relinked is known before the first file moves (no dependence on loop order).
+        var ready: [Plan] = []
         for plan in plans {
             if plan.alreadyLinked { report.linked.append(plan.profile.id); continue }
+            if isOpen(plan.profile) {
+                report.skipped[plan.profile.id] = L("Claude is open in this account. Quit it and try again.", "Bu hesapta Claude açık. Kapatıp tekrar deneyin."); continue
+            }
+            if live().contains(where: { $0.cliSessionID == chat.cliSessionID }) {
+                report.skipped[plan.profile.id] = L("This chat is still running in Claude. Quit Claude in every account and try again.",
+                                                    "Bu sohbet Claude'da hâlâ çalışıyor. Tüm hesaplarda Claude'u kapatıp tekrar deneyin."); continue
+            }
+            // The scan may be old: the loser's history must still be behind the winner's (or, for a fork the
+            // user picked, still have just the messages the scan showed).
+            if !ChatLinker.sameItem(plan.copy.transcript, win.transcript), FileManager.default.fileExists(atPath: plan.copy.transcript.path) {
+                var fine = false
+                switch try? TranscriptDiff.compare(win.transcript, plan.copy.transcript) {
+                case .some(.identical), .some(.firstAhead): fine = true
+                case .some(.forked(_, let own)): fine = expectedForks[plan.profile.id] == own
+                default: fine = false
+                }
+                if !fine { report.skipped[plan.profile.id] = ChatLinker.staleMessage; continue }
+            }
+            ready.append(plan)
+        }
+        // Accounts that end up on the winner's folder: already there, or about to be written.
+        let relinked = Set(plans.map(\.profile.id)).subtracting(report.skipped.keys)
+        // Pass 2: write.
+        for plan in ready {
             do {
-                // Re-check right before writing.
-                if isOpen(plan.profile) {
-                    report.skipped[plan.profile.id] = L("Claude is open in this account. Quit it and try again.", "Bu hesapta Claude açık. Kapatıp tekrar deneyin."); continue
-                }
-                if live().contains(where: { $0.cliSessionID == chat.cliSessionID }) {
-                    report.skipped[plan.profile.id] = L("This chat is still running in Claude. Quit Claude in every account and try again.",
-                                                        "Bu sohbet Claude'da hâlâ çalışıyor. Tüm hesaplarda Claude'u kapatıp tekrar deneyin."); continue
-                }
-                // The scan may be old: the loser's history must still be behind the winner's (or, for a fork the
-                // user picked, still have just the messages the scan showed).
-                if !ChatLinker.sameItem(plan.copy.transcript, win.transcript), FileManager.default.fileExists(atPath: plan.copy.transcript.path) {
-                    var fine = false
-                    switch try? TranscriptDiff.compare(win.transcript, plan.copy.transcript) {
-                    case .some(.identical), .some(.firstAhead): fine = true
-                    case .some(.forked(_, let own)): fine = expectedForks[plan.profile.id] == own
-                    default: fine = false
-                    }
-                    if !fine { report.skipped[plan.profile.id] = ChatLinker.staleMessage; continue }
-                }
                 // Another copy that is not being relinked and uses the same history file keeps it.
                 let shared = chat.copies.contains { other in
                     other.profileID != plan.profile.id && other.profileID != win.profileID && other.hasTranscript
-                        && (!planned.contains(other.profileID) || report.skipped[other.profileID] != nil)
+                        && (!relinked.contains(other.profileID) || report.skipped[other.profileID] != nil)
                         && ChatLinker.sameItem(other.transcript, plan.copy.transcript)
                 }
                 try backUpWorktreeList(of: plan.profile, stamp: stamp)

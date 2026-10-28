@@ -301,8 +301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func makeLinker(_ sw: Switcher) -> ChatLinker {
-        ChatLinker(paths: sw.paths, ledger: ledger(sw),
-                   openFolders: { sw.store.list(status: true).filter { $0.isRunning || sw.isStarting($0) }.map(\.path) })
+        ChatLinker(paths: sw.paths, ledger: ledger(sw), openFolders: { sw.openFolders() })
     }
 
     /// Claude moved a linked chat again: the way linking works has changed, so linking goes off.
@@ -412,23 +411,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         runLinks([(chat, winner)])
     }
 
-    /// profileID -> the messages of its own that each forked non-winner copy has. The copy that is up to
-    /// date counts as forked too when the user kept a forked copy instead of it.
-    private func forkedCounts(_ chat: SharedChat, winner: String) -> [String: Int] {
-        var out: [String: Int] = [:]
-        guard let win = chat.copies.first(where: { $0.profileID == winner }) else { return out }
-        var winnerForked = false
-        if case .forked? = chat.status[winner] { winnerForked = true }
-        for copy in chat.copies where copy.profileID != winner {
-            if case .forked(let n)? = chat.status[copy.profileID] { out[copy.profileID] = n; continue }
-            if winnerForked, copy.hasTranscript, win.hasTranscript, copy.transcript != win.transcript,
-               case .forked(_, let own)? = try? TranscriptDiff.compare(win.transcript, copy.transcript) {
-                out[copy.profileID] = own
-            }
-        }
-        return out
-    }
-
     private func reportBusy() {
         report(L("Another link operation is running; try again in a moment.", "Başka bir bağlama işlemi sürüyor; birazdan tekrar deneyin."))
     }
@@ -445,9 +427,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let sw = switcher else { return }
         if sharedChatsModel.busy { reportBusy(); return }
         let profiles = sw.store.list(status: true)
-        // A forked copy the user chose to replace is only replaced while it still has the messages it has now.
+        // A forked copy the user chose to replace is only replaced while it still has the messages the scan showed.
         var forkCounts: [String: [String: Int]] = [:]
-        for job in jobs { forkCounts[job.chat.id] = forkedCounts(job.chat, winner: job.winner) }
+        for job in jobs { forkCounts[job.chat.id] = LinkPolicy.expectedForks(job.chat, winner: job.winner) }
         var toQuit: [Profile] = []
         for job in jobs {
             for copy in job.chat.copies {
@@ -654,8 +636,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // there keeps whatever pin state the user gave it in that account.
         var pinned = 0
         do {
-            let openFolders = sw.store.list(status: true).filter { $0.isRunning }.map(\.path)
-            pinned = try sw.transfer.carryPins(of: copiedSessions, from: source, to: target, openFolders: openFolders)
+            // Starting accounts count as open, as they do for the linker.
+            pinned = try sw.transfer.carryPins(of: copiedSessions, from: source, to: target, openFolders: sw.openFolders())
         } catch {
             skipped.append(L("Pins were not carried over: \(error.localizedDescription)", "Pinler taşınamadı: \(error.localizedDescription)"))
         }
