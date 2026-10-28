@@ -424,13 +424,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             scanSharedChats()
             return
         }
-        runLinks(jobs)
+        let n = jobs.count
+        runLinks(jobs, ask: L((n == 1 ? "Link 1 chat?" : "Link \(n) chats?") + " In the other account, each chat's record is replaced and its own history, if any, is moved to the backups. Unlink does not bring these back.",
+                              "\(n) sohbet bağlansın mı? Öbür hesapta her sohbetin kaydı değiştirilir, varsa kendi geçmişi yedeklere taşınır. Bağlantıyı kaldırmak bunları geri getirmez."))
     }
 
     /// Closes the accounts that must be closed, links off the main thread, rescans, says what happened
     /// and opens again what it closed. The winner may stay open; its chat process must not be running
     /// (the linker refuses and says so).
-    private func runLinks(_ jobs: [(chat: SharedChat, winner: String)]) {
+    /// `ask`: a question to confirm first; it joins the quit confirmation when there is one.
+    private func runLinks(_ jobs: [(chat: SharedChat, winner: String)], ask: String? = nil) {
         guard let sw = switcher else { return }
         if sharedChatsModel.busy { reportBusy(); return }
         let profiles = sw.store.list(status: true)
@@ -451,9 +454,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if !toQuit.isEmpty {
             let names = toQuit.map(\.name).joined(separator: ", ")
-            guard confirm(L("Quit and sync", "Kapat ve eşitle"),
-                          L("'\(names)' must be closed to sync. Quit, sync, and open again?", "Eşitlemek için '\(names)' kapalı olmalı. Kapatılıp eşitlensin ve yeniden açılsın mı?"),
+            let quit = L("'\(names)' must be closed to sync. Quit, sync, and open again?", "Eşitlemek için '\(names)' kapalı olmalı. Kapatılıp eşitlensin ve yeniden açılsın mı?")
+            guard confirm(L("Quit and sync", "Kapat ve eşitle"), [ask, quit].compactMap { $0 }.joined(separator: "\n\n"),
                           yes: L("Quit and sync", "Kapat ve eşitle"), no: L("Cancel", "Vazgeç")) else { return }
+        } else if let ask {
+            guard confirm(L("Link all", "Tümünü bağla"), ask, yes: L("Link", "Bağla"), no: L("Cancel", "Vazgeç")) else { return }
         }
         sharedChatsModel.busy = true
         quitAll(toQuit, quitSoFar: []) { [weak self] quitOK, closed in
