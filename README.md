@@ -261,7 +261,8 @@ Safety rules, the same as [claude-migrate](https://github.com/onlyilkr/claude-mi
   exists.
 - **Never while the target is open.** Claude keeps its chat list and pins in memory and writes them back
   when it quits, which would drop the copies. The switcher offers to quit the target, copy, and open it
-  again.
+  again. An account the switcher has just started counts as open until its window is up, and is checked
+  again right before anything is written.
 - **Never brings back a chat you deleted** in the target account.
 - **Skips chats that are already there**, also when they were resumed under a new id.
 - **Marks chats with no transcript on this Mac**; they would open empty.
@@ -282,8 +283,12 @@ chat's worktree before moving it: uncommitted files are not carried to the new o
 
 If the target account already has the chat, the summary says so, and when that copy is behind it
 says how far ("already in 'Work', but 635 messages behind - don't continue it there") instead of just
-"already there". With linking off, it also asks you to confirm before you copy a worktree chat; with
-linking on, the transfer links the chat instead.
+"already there". With linking off, it also asks you to confirm before you copy a worktree chat.
+
+With linking on, the transfer links a worktree chat instead: chats copied now are linked, and so are
+chats that were already there with the same history (the summary notes that they would have split).
+Chats that were already there but are behind or forked are not linked; use **Sync** for those. If
+another link operation is running, the transfer still copies and reports the chats as "not linked".
 
 ## Shared chats
 
@@ -309,8 +314,8 @@ shows how each copy compares, and, if you turn it on, can keep worktree chats on
   **Open where it's up to date** opens the account that has the newest copy.
 - **`claude-profiles --shared-chats`** prints the same list.
 
-Only local Code chats are covered. The switcher counts messages by reading the history files; without linking turned on it
-never changes history files, and nothing it reads leaves your Mac.
+Only local Code chats are covered. The switcher counts messages by reading the history files; without
+linking turned on it never changes history files, and nothing it reads leaves your Mac.
 
 ### Linking worktree chats (experimental, off by default)
 
@@ -324,8 +329,8 @@ says so. Nothing is linked until you ask:
 
 | Button | Does |
 | --- | --- |
-| **Sync** | For a chat that is behind or forked: keep the newer copy (for a fork you pick which), and make the other account use it. The out-of-date history is moved to the switcher's backups, never deleted. The other account's own record of the chat is replaced (after a backup), keeping its archived and starred state; the pin list is not touched. |
-| **Link** | For a chat that is still on one history but would split: tell the other account about the worktree so Claude keeps using it. It uses the same operation as Sync: the other account's chat record is replaced after a backup, and if that account had its own history file for the chat, it is moved to the backups. |
+| **Sync** | For a chat that is behind or forked: keep the newer copy (for a fork you pick which), and make the other account use it. The out-of-date history is moved to the switcher's backups, never deleted (see below for when it stays). The other account's own record of the chat is replaced (after a backup), keeping its archived and starred state; the pin list is not touched. |
+| **Link** | For a chat that is still on one history but would split: tell the other account about the worktree so Claude keeps using it. It uses the same operation as Sync: the other account's chat record is replaced after a backup, and if that account had its own history file for the chat, it is moved to the backups (see below for when it stays). |
 | **Link all** | Link every such chat. |
 | **Unlink** | Undo the link for one chat. |
 
@@ -334,7 +339,17 @@ target account has no worktree list yet, because Claude has not made one there),
 copied and the window says why.
 
 The account that gets the other copy's history must be closed, and no account may be running that
-chat. If one is open, the switcher asks **Quit and sync**, then opens it again afterwards.
+chat. An account that is still starting counts as open: the switcher asks you to wait until its window
+is up. If an account is open, it asks **Quit and sync**, then opens it again afterwards.
+
+Sync and Link check the chat again right before they write, because the window may show a scan from a
+minute ago. If the chat moved on in the meantime, the account is left alone and the switcher says "This
+chat changed since it was checked; refresh and try again." A copy you picked to replace in a fork is
+refused the same way if either copy changed since the scan.
+
+If another account's copy still uses the same history file as the one being replaced, that file is not
+moved: it stays in place and the result carries a warning. The accounts that were linked still use the
+winner's history; the leftover file goes to the backups when you link the remaining copy.
 
 #### Limits you should know
 
@@ -342,10 +357,10 @@ chat. If one is open, the switcher asks **Quit and sync**, then opens it again a
   differently. If the switcher sees a linked chat that Claude moved again, it turns linking off and
   says so; it does not unlink anything.
 - **Never open a linked chat in two accounts at once.** Both would write to one history file and it
-  would branch. In testing, Claude kept an idle chat's process for about 30 minutes, so closing the window is not
-  enough: wait, or quit that account. The panel warns when it sees a linked chat running in two
-  accounts. This warning relies on chat processes started with `--resume`, so a chat started fresh in the last
-  minutes may not be detected.
+  would branch. In testing, Claude kept an idle chat's process for about 30 minutes, so closing the
+  window is not enough: wait, or quit that account. While linking is on, the panel checks every 15
+  seconds and warns when it sees a linked chat running in two accounts. The warning relies on chat
+  processes started with `--resume`, so a chat started fresh in the last minutes may not be detected.
 - **Deleting a linked chat in one account deletes its history in both.** There is only one file.
 - **Archive in every account together.** If a linked chat is archived in only one account, that
   account's Claude may give the worktree to another chat. The window marks such a chat.
@@ -355,9 +370,10 @@ chat. If one is open, the switcher asks **Quit and sync**, then opens it again a
 #### Undoing it
 
 **Unlink** (one chat), **Remove links** when you turn the setting off, or
-`claude-profiles --unlink-chats` (all chats; it exits 0 even when it skips open accounts, and 1 only if its ledger cannot be read) remove what the switcher added. It keeps a list of what it
-wrote in `links.json` in its settings folder and removes an entry only if it is still as the switcher
-left it; changed ones are skipped and reported. Open accounts are skipped too.
+`claude-profiles --unlink-chats` (all chats) remove what the switcher added. `--unlink-chats` exits 0
+even when it skips accounts, and 1 only if its ledger cannot be read. The switcher keeps a list of what
+it wrote in `links.json` in its settings folder and removes an entry only if it is still as the
+switcher left it; changed ones are skipped and reported. Open and starting accounts are skipped too.
 
 After unlinking, a chat goes back to the behaviour described above. Unlinking only removes the
 worktree-list entry the switcher added. It does not restore the other account's replaced chat record,
@@ -368,14 +384,19 @@ had before linking either: Claude may have reused it in the meantime.
 
 - Before it changes a file of Claude's, the switcher saves a dated copy next to it
   (`<file>.switcher-backup-<time>`, the newest five).
-- A history that Sync replaces is moved to
-  `~/Library/Application Support/Claude Profile Switcher/backups/transcripts/<time>/<account>/`.
-  History files are never deleted by the switcher.
+- A history that Sync or Link replaces is moved to
+  `~/Library/Application Support/Claude Profile Switcher/backups/transcripts/<time>/<account>/`, but
+  only if every other copy that used that file was linked too; otherwise it stays where it is. History
+  files are never deleted by the switcher.
+- Each link run also keeps a copy of every changed account's `git-worktrees.json` in that folder
+  (`backups/transcripts/<time>/<account>/`). Unlike the dated copies beside Claude's files, these are
+  never rotated.
 
 ### Pins
 
-Claude keeps a pinned chat in two places, and the two match in each account. When the switcher opens
-an account, the pins of the chats it shares with the account you used last follow that account:
+Claude keeps a pinned chat in two places, and the two match in each account: an ordered list in
+`claude_desktop_config.json` and a starred flag on each chat's record. When the switcher opens an
+account, the pins of the chats it shares with the account you used last follow that account:
 
 - **The account you used last wins.** Among your other accounts that share at least one chat with the
   one being opened, the switcher takes the one that was used most recently, and only if it was used
@@ -384,13 +405,17 @@ an account, the pins of the chats it shares with the account you used last follo
 - **Same order.** The shared chats pinned there come first, in that order. A shared chat that is not
   pinned there is unpinned in the opened account too (unpin follows).
 - **Pins of chats only the opened account has are kept**, after the shared ones, in their own order.
-- **Nothing is written when nothing would change.**
+- **The starred flag on the records follows the list**, so the two stay in step.
+- **Nothing is written when nothing would change.** A run that stopped halfway (list written, some
+  records not) is repaired the next time the account opens.
 
-This happens only when the switcher opens the account (the panel, a launcher, or `--launch`), and only
-while that account is closed. Opening Claude.app directly skips it. Before it writes, the switcher
-backs up the account's `claude_desktop_config.json` and the chat records it changes. If anything fails,
-the account still opens and a line without chat names goes to the switcher's log. Turn it off with
-**Sync pins across accounts** in the panel (`SyncPins` in `settings.json`).
+This happens only when the switcher opens an account (the panel, a launcher, or `--launch`), and only
+while that account is closed; one that is already open or still starting is left alone. Opening
+Claude.app directly skips it. Before it writes, the switcher backs up the account's
+`claude_desktop_config.json` and the chat records it changes. It never blocks opening: if anything
+fails, the account still opens and the switcher's log gets one line with a fixed reason, such as
+"profile is open" or "pins changed since planning", and no chat names or file paths. It is on by
+default; turn it off with **Sync pins across accounts** in the panel (`SyncPins` in `settings.json`).
 
 ## Launchers
 
