@@ -66,10 +66,11 @@ public enum PinSync {
     public static func apply(_ plan: PinSyncPlan, to target: Profile, transfer: ChatTransfer, openFolders: [URL]) throws {
         let targetPath = target.path.resolvingSymlinksInPath().standardizedFileURL.path
         if openFolders.contains(where: { $0.resolvingSymlinksInPath().standardizedFileURL.path == targetPath }) {
-            throw SwitcherError(L("The profile is open; pins were not synced.", "Profil açık; pinler eşitlenmedi."))
+            throw SwitcherError(L("The profile is open; pins were not synced.", "Profil açık; pinler eşitlenmedi."), logReason: "profile is open")
         }
         guard transfer.pins(of: target) == plan.seenPins else {
-            throw SwitcherError(L("The pins changed since they were read; pins were not synced.", "Pinler okunduktan sonra değişti; eşitlenmedi."))
+            throw SwitcherError(L("The pins changed since they were read; pins were not synced.", "Pinler okunduktan sonra değişti; eşitlenmedi."),
+                                logReason: "pins changed since planning")
         }
         // Records-only heal: the list is already right, so the config is not rewritten (and not backed up).
         if plan.newPins != plan.seenPins { try transfer.writePins(plan.newPins, to: target, openFolders: openFolders) }
@@ -77,7 +78,8 @@ public enum PinSync {
         let failed = transfer.setStarred(true, ids: plan.star, in: target) + transfer.setStarred(false, ids: plan.unstar, in: target)
         if failed > 0 {
             throw SwitcherError(L("The pin list was written, but \(failed) chat record(s) could not be updated; the next launch retries.",
-                                  "Pin listesi yazıldı, ancak \(failed) sohbet kaydı güncellenemedi; sonraki açılışta yeniden denenir."))
+                                  "Pin listesi yazıldı, ancak \(failed) sohbet kaydı güncellenemedi; sonraki açılışta yeniden denenir."),
+                                logReason: "\(failed) record(s) not updated")
         }
     }
 }

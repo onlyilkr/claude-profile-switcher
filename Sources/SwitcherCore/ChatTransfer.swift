@@ -184,7 +184,8 @@ public struct ChatTransfer {
         let real = file.standardizedFileURL.path
         if let owner = openFolders.first(where: { real.hasPrefix($0.resolvingSymlinksInPath().standardizedFileURL.path + "/") }) {
             throw SwitcherError(L("The pins live in \(real), which belongs to the open profile at \(owner.path). Quit it and try again.\(afterwards)",
-                                  "Pinler \(real) dosyasında, o da \(owner.path) konumundaki açık profile ait. Onu kapatıp tekrar deneyin.\(afterwards)"))
+                                  "Pinler \(real) dosyasında, o da \(owner.path) konumundaki açık profile ait. Onu kapatıp tekrar deneyin.\(afterwards)"),
+                                logReason: "config belongs to an open profile")
         }
         var root: [String: Any] = [:]
         if FileManager.default.fileExists(atPath: file.path) {
@@ -192,7 +193,8 @@ public struct ChatTransfer {
             // MCP servers and every other setting in it.
             guard let parsed = readObject(file) else {
                 throw SwitcherError(L("\(file.path) is not valid JSON, so the pins were not written.\(afterwards)",
-                                      "\(file.path) geçerli bir JSON değil, bu yüzden pinler yazılmadı.\(afterwards)"))
+                                      "\(file.path) geçerli bir JSON değil, bu yüzden pinler yazılmadı.\(afterwards)"),
+                                      logReason: "config is not valid JSON")
             }
             root = parsed
             try ChatTransfer.backUp(file)

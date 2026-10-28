@@ -195,24 +195,43 @@ public struct ChatLinker {
             }
             ready.append(plan)
         }
-        // Accounts that end up on the winner's folder: already there, or about to be written.
-        let relinked = Set(plans.map(\.profile.id)).subtracting(report.skipped.keys)
-        // Pass 2: write.
+        // Pass 2: records and leases. Everything may have changed since pass 1, so open/live are checked again
+        // for every account right before its own write.
+        var written: [Plan] = []
         for plan in ready {
+            if isOpen(plan.profile) {
+                report.skipped[plan.profile.id] = L("Claude is open in this account. Quit it and try again.", "Bu hesapta Claude açık. Kapatıp tekrar deneyin."); continue
+            }
+            if live().contains(where: { $0.cliSessionID == chat.cliSessionID }) {
+                report.skipped[plan.profile.id] = L("This chat is still running in Claude. Quit Claude in every account and try again.",
+                                                    "Bu sohbet Claude'da hâlâ çalışıyor. Tüm hesaplarda Claude'u kapatıp tekrar deneyin."); continue
+            }
             do {
-                // Another copy that is not being relinked and uses the same history file keeps it.
-                let shared = chat.copies.contains { other in
-                    other.profileID != plan.profile.id && other.profileID != win.profileID && other.hasTranscript
-                        && (!relinked.contains(other.profileID) || report.skipped[other.profileID] != nil)
-                        && ChatLinker.sameItem(other.transcript, plan.copy.transcript)
-                }
                 try backUpWorktreeList(of: plan.profile, stamp: stamp)
-                let warning = try apply(plan, chat: chat, win: win, winnerRaw: winnerRaw, winnerEntry: winnerEntry, transfer: transfer,
-                                        stamp: stamp, keepTranscript: shared)
+                try apply(plan, chat: chat, win: win, winnerRaw: winnerRaw, winnerEntry: winnerEntry)
                 report.linked.append(plan.profile.id)
-                if let warning { report.warnings[plan.profile.id] = warning }
+                written.append(plan)
             } catch {
                 report.skipped[plan.profile.id] = error.localizedDescription
+            }
+        }
+        // Pass 3: old history files. A file moves only when every other copy that uses it (same path, or same
+        // device and inode) was relinked in pass 2 or before; otherwise it stays for that copy. This depends on
+        // the outcome of passes 1 and 2 only, never on the order of the accounts.
+        let relinked = Set(report.linked)
+        for plan in written where !ChatLinker.sameItem(plan.copy.transcript, win.transcript) {
+            let stillUsed = chat.copies.contains { other in
+                other.profileID != plan.profile.id && other.profileID != win.profileID && other.hasTranscript
+                    && !relinked.contains(other.profileID) && ChatLinker.sameItem(other.transcript, plan.copy.transcript)
+            }
+            if stillUsed {
+                report.warnings[plan.profile.id] = L("Its old history file was kept where it is: another account's copy still uses it.",
+                                                     "Eski geçmiş dosyası yerinde bırakıldı: başka bir hesabın kopyası hâlâ onu kullanıyor.")
+                continue
+            }
+            do { try moveToBackup(plan.copy, cli: chat.cliSessionID, profileID: plan.profile.id, stamp: stamp) } catch {
+                report.warnings[plan.profile.id] = L("Linked, but its old history file could not be moved: \(error.localizedDescription)",
+                                                     "Bağlandı, ama eski geçmiş dosyası taşınamadı: \(error.localizedDescription)")
             }
         }
         return report
@@ -246,11 +265,9 @@ public struct ChatLinker {
         for d in [dir.deletingLastPathComponent(), dir] { chmod(d.path, 0o700) }
     }
 
-    /// Returns a warning when the account is linked but its old history file could not be (or was not) moved.
-    @discardableResult
+    /// Lease and record steps for one account; its old history file is handled afterwards (pass 3).
     private func apply(_ plan: Plan, chat: SharedChat, win: ChatCopy, winnerRaw: [String: Any],
-                       winnerEntry: (name: String, value: [String: Any])?, transfer: ChatTransfer,
-                       stamp: String, keepTranscript: Bool) throws -> String? {
+                       winnerEntry: (name: String, value: [String: Any])?) throws {
         // 0. A ledger that can't be read means nothing is written for this account.
         try ledger.ensureReadable()
         // 1. Lease steps (the step that can be refused because Claude changed the file; nothing
@@ -300,19 +317,6 @@ public struct ChatLinker {
             }
             throw error
         }
-        // 3. History: this account's own copy goes to the backup folder, never deleted, and only
-        //    when it is not the file the winner uses (same path or same device and inode).
-        if !ChatLinker.sameItem(plan.copy.transcript, win.transcript) {
-            if keepTranscript {
-                return L("Its old history file was kept where it is: another account's copy still uses it.",
-                         "Eski geçmiş dosyası yerinde bırakıldı: başka bir hesabın kopyası hâlâ onu kullanıyor.")
-            }
-            do { try moveToBackup(plan.copy, cli: chat.cliSessionID, profileID: plan.profile.id, stamp: stamp) } catch {
-                return L("Linked, but its old history file could not be moved: \(error.localizedDescription)",
-                         "Bağlandı, ama eski geçmiş dosyası taşınamadı: \(error.localizedDescription)")
-            }
-        }
-        return nil
     }
 
     private func writeRecord(_ data: Data, to record: URL) throws {

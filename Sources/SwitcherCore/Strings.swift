@@ -10,6 +10,8 @@ public func L(_ en: String, _ tr: String) -> String { Lang.turkish ? tr : en }
 
 public struct SwitcherError: LocalizedError, Equatable {
     public let message: String
-    public init(_ message: String) { self.message = message }
+    /// A fixed English reason without paths, names or ids, for logs; nil = log only the error's domain and code.
+    public let logReason: String?
+    public init(_ message: String, logReason: String? = nil) { self.message = message; self.logReason = logReason }
     public var errorDescription: String? { message }
 }

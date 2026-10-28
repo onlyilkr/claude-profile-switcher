@@ -245,13 +245,50 @@ final class PinSyncTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: ChatTransfer.configFile(t)), "not json", "nothing was written")
     }
 
-    func testRedactPathsHidesHomeAndOtherAbsolutePaths() {
-        let r = { (m: String) in Switcher.redactPaths(m, home: "/Users/someone") }
-        XCTAssertEqual(r("/Users/someone/Library/Application Support/Claude/c.json is not valid JSON, so the pins were not written."),
-                       "~/Library/Application <path> is not valid JSON, so the pins were not written.".replacingOccurrences(of: "<path>", with: "Support/Claude/c.json"))
-        XCTAssertEqual(r("The pins live in /Volumes/Disk/Claude-2/c.json, which belongs to the open profile at /Users/someone/x."),
-                       "The pins live in <path>, which belongs to the open profile at ~/x.")
-        XCTAssertEqual(r("nothing here, a/b and/or c"), "nothing here, a/b and/or c")
+    private func assertPathFree(_ line: String, file: StaticString = #filePath, line l: UInt = #line) {
+        XCTAssertFalse(line.contains("/"), "no path in the log: \(line)", file: file, line: l)
+        XCTAssertFalse(line.contains("~"), "no home marker in the log: \(line)", file: file, line: l)
+        XCTAssertFalse(line.contains("local_"), file: file, line: l)
+    }
+
+    func testLoggedReasonForUnparseableConfigIsFixedAndPathFree() throws {
+        // The profile folder has spaces and sits under a folder that stands in for the home folder.
+        let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
+        let t = try profile("My Profile", chats: ["local_a"], pins: [])
+        try Data("not json".utf8).write(to: ChatTransfer.configFile(t))
+        let lines = runLaunchSync(t, s)
+        XCTAssertEqual(lines.errors, ["Pin sync for 'My Profile' failed: config is not valid JSON"])
+        assertPathFree(lines.errors[0])
+    }
+
+    func testLoggedReasonForRecordsNotUpdatedIsFixedAndPathFree() throws {
+        let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
+        let t = try profile("My Profile", chats: ["local_a"], pins: [])
+        let locked = ChatTransfer.sessionRoot(t).appendingPathComponent("acct/org2")
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: ["sessionId": "local_a"]).write(to: locked.appendingPathComponent("local_a.json"))
+        chmod(locked.path, 0o500)
+        defer { chmod(locked.path, 0o700) }
+        let lines = runLaunchSync(t, s)
+        XCTAssertEqual(lines.errors, ["Pin sync for 'My Profile' failed: 1 record(s) not updated"])
+    }
+
+    func testLoggedReasonsOfTheOtherKnownFailures() throws {
+        let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
+        let t = try profile("My Profile", chats: ["local_a"], pins: [])
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        func reason(_ body: () throws -> Void) -> String? {
+            do { try body(); return nil } catch { return (error as? SwitcherError)?.logReason }
+        }
+        XCTAssertEqual(reason { try PinSync.apply(plan, to: t, transfer: transfer, openFolders: [t.path]) }, "profile is open")
+        XCTAssertEqual(reason { try self.transfer.writePins(["local_a"], to: t, openFolders: [t.path]) }, "config belongs to an open profile")
+        _ = try profile("My Profile", chats: ["local_a"], pins: ["local_zzz"])   // pins change under the plan
+        XCTAssertEqual(reason { try PinSync.apply(plan, to: t, transfer: transfer, openFolders: []) }, "pins changed since planning")
+        for r in ["profile is open", "config belongs to an open profile", "pins changed since planning"] { assertPathFree(r) }
+    }
+
+    func testUnknownErrorsAreLoggedAsDomainAndCode() {
+        XCTAssertEqual(Switcher.describe(NSError(domain: "NSCocoaErrorDomain", code: 513)), "NSCocoaErrorDomain 513")
     }
 
     func testRecordsOnlyHealDoesNotRewriteOrBackUpTheConfig() throws {

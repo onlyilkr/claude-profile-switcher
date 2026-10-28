@@ -137,10 +137,10 @@ public final class Switcher {
             guard let plan = PinSync.plan(target: target, source: source, transfer: transfer) else { return }
             try PinSync.apply(plan, to: target, transfer: transfer, openFolders: openFolders)
             log("Pins synced from '\(source.name)' to '\(target.name)'")
-        } catch let error as SwitcherError {
-            logError("Pin sync for '\(target.name)' failed: \(Switcher.redactPaths(error.message))")
         } catch {
-            logError("Pin sync for '\(target.name)' failed: \(Switcher.describe(error))")
+            // Fixed, path-free reasons only: the user-facing messages quote file paths and the log is pasted into bug reports.
+            let reason = (error as? SwitcherError)?.logReason ?? Switcher.describe(error)
+            logError("Pin sync for '\(target.name)' failed: \(reason)")
         }
     }
 
@@ -377,16 +377,6 @@ public final class Switcher {
     /// An error as its domain and code only. Its message can quote the URL an operation
     /// was about, and a claude:// sign-in link carries a one-time code; logs are pasted
     /// into public bug reports.
-    /// For the error log: the home folder becomes `~`, any other absolute path becomes `<path>`, so a
-    /// message that names a config file does not leave the user's folder layout in a log.
-    static func redactPaths(_ message: String, home: String = NSHomeDirectory()) -> String {
-        var out = message
-        let h = home.hasSuffix("/") && home.count > 1 ? String(home.dropLast()) : home
-        if h.count > 1 { out = out.replacingOccurrences(of: h + "/", with: "~/").replacingOccurrences(of: h, with: "~") }
-        guard let regex = try? NSRegularExpression(pattern: "(?<![\\w~.])/[^/\\s'\",;]+(?:/[^/\\s'\",;]+)*") else { return out }
-        return regex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: "<path>")
-    }
-
     public static func describe(_ error: Error) -> String {
         let e = error as NSError
         return "\(e.domain) \(e.code)"
