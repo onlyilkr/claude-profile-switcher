@@ -25,20 +25,23 @@ public enum Badge {
             for i in 1..<n where use[i] < use[best] { best = i }
             return best
         }
+        // The panel asks on every refresh: a known colour must not take the lock or rewrite the file.
+        let stored = settings.colors
+        if let known = stored[id] { return normalised(known) }
         var picked = 0
         // Picked inside the lock from the fresh map: another process may have just assigned this id.
         // A colour that could not be saved is picked again next time; the badge still draws.
         do {
             try settings.update("Colors") { current in
-                var map = ((current as? [String: Any]) ?? [:]).compactMapValues { ($0 as? NSNumber)?.intValue }
-                if let known = map[id] { picked = normalised(known); return current }
-                picked = pick(from: map)
-                map[id] = picked
-                return map
+                var raw = (current as? [String: Any]) ?? [:]
+                let fresh = raw.compactMapValues { ($0 as? NSNumber)?.intValue }
+                if let known = fresh[id] { picked = normalised(known); return current }
+                picked = pick(from: fresh)
+                raw[id] = picked
+                return raw
             }
         } catch {
-            let map = settings.colors
-            picked = map[id].map(normalised) ?? pick(from: map)
+            picked = pick(from: stored)
         }
         return picked
     }

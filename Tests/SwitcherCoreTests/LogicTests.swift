@@ -161,6 +161,18 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(Badge.colorIndex(for: "A", settings: s, alive: ["A", "B"]), a, "and keeps it")
     }
 
+    func testKnownColourDoesNotRewriteSettings() throws {
+        let file = try tempDir().appendingPathComponent("settings.json")
+        let settings = Settings(file: file)
+        let first = Badge.colorIndex(for: "Work", settings: settings, alive: ["Work"])
+        let bytes = try Data(contentsOf: file)
+        let date = try FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate] as? Date
+        Thread.sleep(forTimeInterval: 0.05)
+        XCTAssertEqual(Badge.colorIndex(for: "Work", settings: settings, alive: ["Work"]), first)
+        XCTAssertEqual(try Data(contentsOf: file), bytes)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate] as? Date, date)
+    }
+
     func testNegativeStoredColourDoesNotCrash() throws {
         let settings = Settings(file: try tempDir().appendingPathComponent("settings.json"))
         try settings.set("Colors", ["Work": -3])
