@@ -13,7 +13,7 @@ public struct Paths {
 
     public var appSupport: URL { home.appendingPathComponent("Library/Application Support", isDirectory: true) }
 
-    /// Claude's own data folder. The switcher never writes into it.
+    /// Claude's own data folder. The switcher writes into it only while Default is closed (pins and chat records), after a backup.
     public var defaultProfile: URL { appSupport.appendingPathComponent("Claude", isDirectory: true) }
 
     /// Extra profiles sit next to Claude's own folder, the macOS counterpart of

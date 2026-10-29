@@ -446,12 +446,12 @@ alias claude-profiles="/Applications/Claude\ Profile\ Switcher.app/Contents/MacO
 | `claude-profiles --shortcut Work` | Make the `Claude - Work.app` launcher |
 | `claude-profiles --status` | Sign-in routing state, who opens `claude://` now, and which open accounts are signed in |
 | `claude-profiles --route-sign-ins` | Turn sign-in routing on |
-| `claude-profiles --revert` | Turn it off and give `claude://` back to Claude |
+| `claude-profiles --revert` | Turn it off and give `claude://` back to Claude (exits 1 if something could not be undone) |
 | `claude-profiles --shared-chats` | Chats that exist in several accounts and how each copy compares |
 | `claude-profiles --unlink-chats` | Remove every link the switcher made between accounts' worktree chats (open accounts are skipped) |
 | `claude-profiles --open-link <url> --account Work` | Open a `claude://` link in a chosen account |
 | `claude-profiles --open-links-in Work` | Where links that are not sign-ins go while routing is on; `Default` undoes it |
-| `claude-profiles --claude-path <Claude.app>` | Use a Claude installed somewhere unusual (remembered) |
+| `claude-profiles --claude-path <Claude.app>` | Use a Claude installed somewhere unusual (remembered; only Claude is accepted) |
 | `claude-profiles --version`, `--help` | |
 
 Profiles are found by folder name or display name, ignoring case. A name that matches nothing is an
@@ -477,7 +477,7 @@ writes most of them; two are for hand editing:
 
 | Key | Meaning |
 | --- | --- |
-| `ProfileEnv` | Environment variables for one account's Claude, keyed by the profile's folder name (`--list` shows it in brackets when the display name differs). Names must be letters, digits and `_`, not starting with a digit. |
+| `ProfileEnv` | Environment variables for one account's Claude, keyed by the profile's folder name (`--list` shows it in brackets when the display name differs). Names must be letters, digits and `_`, not starting with a digit. Variables are passed to Claude as they are, including `DYLD_*` and `NODE_OPTIONS`; only put there what you would set in your own shell. |
 | `ProfileArgs` | Extra launch flags for one account, as one string or a list. They apply from every place that opens the account. |
 | `Labels`, `Colors` | Display names and badge colours, set from the panel. |
 | `SignInRouting`, `OpenLinksIn`, `RouterBackup` | Sign-in routing state. |
@@ -639,6 +639,11 @@ press **Sync**; read [Shared chats](#shared-chats) first.
 Launchers you kept in `~/Applications` (`Claude - <name>.app`, including one for Default) stop working
 once the app is gone; drag them to the Trash too. Uninstalling never removes your extra accounts' folders (`~/Library/Application Support/ClaudeProfile-*`),
 because they hold signed-in accounts and chats. Delete them yourself if you no longer need them.
+
+The switcher's backups of Claude files stay in each account's folder (`*.switcher-backup-*`, including
+chat records under `claude-code-sessions`); `--zap` removes only the backups of `claude_desktop_config.json`.
+`find ~/Library/Application\ Support/Claude ~/Library/Application\ Support/ClaudeProfile-* -name '*.switcher-backup-*'`
+lists all of them.
 
 ## Development
 

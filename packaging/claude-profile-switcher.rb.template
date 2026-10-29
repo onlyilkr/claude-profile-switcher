@@ -33,7 +33,12 @@ cask "claude-profile-switcher" do
             },
             quit:         "io.github.onlyilkr.ClaudeProfileSwitcher"
 
-  # Only the switcher's own settings and logs. Extra Claude profiles hold signed-in
-  # accounts and chats, so they are never removed by an uninstall.
-  zap trash: "~/Library/Application Support/Claude Profile Switcher"
+  # The switcher's own settings and logs, and its backups of claude_desktop_config.json.
+  # Extra Claude profiles hold signed-in accounts and chats, so their folders are never
+  # removed by an uninstall.
+  zap trash: [
+    "~/Library/Application Support/Claude Profile Switcher",
+    "~/Library/Application Support/Claude/claude_desktop_config.json.switcher-backup-*",
+    "~/Library/Application Support/ClaudeProfile-*/claude_desktop_config.json.switcher-backup-*",
+  ]
 end
