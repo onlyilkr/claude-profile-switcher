@@ -169,21 +169,27 @@ final class PinSyncTests: XCTestCase {
     private func upperCased(_ url: URL) -> URL { url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent.uppercased()) }
 
     func testWritePinsRefusesAConfigLinkedIntoAnOpenProfileSpelledInOtherCase() throws {
+        // End-to-end guard: Foundation already normalises case for an existing target, so this also passes on the old string check.
         try skipUnlessCaseInsensitive()
         let a = try profile("Alpha", chats: ["local_1"], pins: [])
         let b = try profile("Beta", chats: ["local_1"], pins: [])
         let linked = ChatTransfer.configFile(b)
         try FileManager.default.removeItem(at: linked)
-        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: ChatTransfer.configFile(a))
-        // The same profile reached by a path spelled in other case, whose config file is not there yet:
-        // with nothing to resolve, the spelling stays as written.
+        let spelled = upperCased(a.path).appendingPathComponent(ChatTransfer.configFile(a).lastPathComponent)
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: spelled)
+        let before = try Data(contentsOf: ChatTransfer.configFile(a))
+        XCTAssertThrowsError(try transfer.writePins(["local_1"], to: b, openFolders: [upperCased(a.path)]))
+        XCTAssertEqual(try Data(contentsOf: ChatTransfer.configFile(a)), before, "the open profile's config is unchanged")
+    }
+
+    func testWritePinsRefusesAnOpenProfileSpelledInOtherCaseWhenItHasNoConfigYet() throws {
+        try skipUnlessCaseInsensitive()
+        let a = try profile("Alpha", chats: ["local_1"], pins: [])
         try FileManager.default.removeItem(at: ChatTransfer.configFile(a))
+        // With no file to resolve, the spelling of the target path stays as written.
         let spelled = Profile(id: "Alpha", name: "Alpha", path: upperCased(a.path))
         XCTAssertThrowsError(try transfer.writePins(["local_1"], to: spelled, openFolders: [a.path]))
         XCTAssertFalse(FileManager.default.fileExists(atPath: ChatTransfer.configFile(a).path), "nothing was written into the open profile")
-        // And the config that B links to is A's, however the link spells it.
-        let viaLink = try FileManager.default.destinationOfSymbolicLink(atPath: linked.path)
-        XCTAssertTrue(ProfileStore.isInside(URL(fileURLWithPath: viaLink), upperCased(a.path)))
     }
 
     func testPinSyncApplyRefusesAnOpenTargetSpelledInOtherCase() throws {
