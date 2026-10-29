@@ -160,6 +160,41 @@ final class PinSyncTests: XCTestCase {
         XCTAssertNil(try record(t, "local_a")["isStarred"])
     }
 
+    /// The tests below need a volume that ignores case (the default APFS one).
+    private func skipUnlessCaseInsensitive() throws {
+        try Data().write(to: home.appendingPathComponent("probe"))
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: home.appendingPathComponent("PROBE").path), "case-sensitive volume")
+    }
+
+    private func upperCased(_ url: URL) -> URL { url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent.uppercased()) }
+
+    func testWritePinsRefusesAConfigLinkedIntoAnOpenProfileSpelledInOtherCase() throws {
+        try skipUnlessCaseInsensitive()
+        let a = try profile("Alpha", chats: ["local_1"], pins: [])
+        let b = try profile("Beta", chats: ["local_1"], pins: [])
+        let linked = ChatTransfer.configFile(b)
+        try FileManager.default.removeItem(at: linked)
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: ChatTransfer.configFile(a))
+        // The same profile reached by a path spelled in other case, whose config file is not there yet:
+        // with nothing to resolve, the spelling stays as written.
+        try FileManager.default.removeItem(at: ChatTransfer.configFile(a))
+        let spelled = Profile(id: "Alpha", name: "Alpha", path: upperCased(a.path))
+        XCTAssertThrowsError(try transfer.writePins(["local_1"], to: spelled, openFolders: [a.path]))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ChatTransfer.configFile(a).path), "nothing was written into the open profile")
+        // And the config that B links to is A's, however the link spells it.
+        let viaLink = try FileManager.default.destinationOfSymbolicLink(atPath: linked.path)
+        XCTAssertTrue(ProfileStore.isInside(URL(fileURLWithPath: viaLink), upperCased(a.path)))
+    }
+
+    func testPinSyncApplyRefusesAnOpenTargetSpelledInOtherCase() throws {
+        try skipUnlessCaseInsensitive()
+        let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
+        let t = try profile("Target", chats: ["local_a"], pins: [])
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        XCTAssertThrowsError(try PinSync.apply(plan, to: t, transfer: transfer, openFolders: [upperCased(t.path)]))
+        XCTAssertEqual(transfer.pins(of: t), [])
+    }
+
     func testStalePlanIsRefused() throws {
         let s = try profile("S", chats: ["local_a", "local_b"], pins: ["local_a"])
         let t = try profile("T", chats: ["local_a", "local_b"], pins: [])

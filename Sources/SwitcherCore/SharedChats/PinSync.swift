@@ -72,8 +72,7 @@ public enum PinSync {
     /// Writes the list, then the records. Nothing is written when the target is open, the
     /// pin list on disk is no longer what the plan saw, or the config cannot be parsed.
     public static func apply(_ plan: PinSyncPlan, to target: Profile, transfer: ChatTransfer, openFolders: [URL]) throws {
-        let targetPath = target.path.resolvingSymlinksInPath().standardizedFileURL.path
-        if openFolders.contains(where: { $0.resolvingSymlinksInPath().standardizedFileURL.path == targetPath }) {
+        if openFolders.contains(where: { ProfileStore.sameItem($0, target.path) }) {
             throw SwitcherError(L("The profile is open; pins were not synced.", "Profil açık; pinler eşitlenmedi."), logReason: "profile is open")
         }
         guard transfer.pins(of: target) == plan.seenPins else {

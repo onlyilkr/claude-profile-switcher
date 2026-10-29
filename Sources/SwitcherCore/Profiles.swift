@@ -47,6 +47,29 @@ public final class ProfileStore {
         return "path:" + path.lowercased()
     }
 
+    /// The same file or folder: equal after resolving symlinks, or (both existing) the same device and inode,
+    /// which also catches a different spelling of the same folder on a case-insensitive volume.
+    public static func sameItem(_ a: URL, _ b: URL) -> Bool {
+        if a.resolvingSymlinksInPath().standardizedFileURL.path == b.resolvingSymlinksInPath().standardizedFileURL.path { return true }
+        let fm = FileManager.default
+        guard let x = try? fm.attributesOfItem(atPath: a.path), let y = try? fm.attributesOfItem(atPath: b.path),
+              let xi = x[.systemFileNumber] as? NSNumber, let yi = y[.systemFileNumber] as? NSNumber,
+              let xd = x[.systemNumber] as? NSNumber, let yd = y[.systemNumber] as? NSNumber else { return false }
+        return xi == yi && xd == yd
+    }
+
+    /// Whether `file` (after resolving its symlinks) lies inside `folder`, compared by identity
+    /// so a differently-spelled path to the same folder still counts.
+    public static func isInside(_ file: URL, _ folder: URL) -> Bool {
+        var ancestor = file.resolvingSymlinksInPath().standardizedFileURL
+        while true {
+            if sameItem(ancestor, folder) { return true }
+            // "/" has no parent: deletingLastPathComponent would go on to "/../" forever.
+            if ancestor.path == "/" { return false }
+            ancestor = ancestor.deletingLastPathComponent()
+        }
+    }
+
     public static func runningMap(bundleID: String, defaultFolder: URL) -> [String: pid_t] {
         var map: [String: pid_t] = [:]
         for instance in ProcessScanner.claudeInstances(bundleID: bundleID) {

@@ -50,6 +50,20 @@ final class ProfileStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: store.paths.profileDir(id: "Work").path))
     }
 
+    func testIsInsideFollowsSymlinksAndCase() throws {
+        let fm = FileManager.default
+        try Data().write(to: home.appendingPathComponent("probe"))
+        try XCTSkipUnless(fm.fileExists(atPath: home.appendingPathComponent("PROBE").path), "case-sensitive volume")
+        let folder = home.appendingPathComponent("Folder"), other = home.appendingPathComponent("Other")
+        for dir in [folder, other] { try fm.createDirectory(at: dir, withIntermediateDirectories: true) }
+        try Data().write(to: folder.appendingPathComponent("config.json"))
+        let link = home.appendingPathComponent("link.json")
+        try fm.createSymbolicLink(at: link, withDestinationURL: folder.appendingPathComponent("config.json"))
+        XCTAssertTrue(ProfileStore.isInside(link, home.appendingPathComponent("FOLDER")))
+        XCTAssertFalse(ProfileStore.isInside(link, other))
+        XCTAssertFalse(ProfileStore.isInside(folder, folder.appendingPathComponent("config.json")), "a folder is not inside its own file")
+    }
+
     func testRunningMapMarksProfiles() throws {
         let work = try store.create(name: "Work")
         running = [ProfileStore.key(work.path): 42, ProfileStore.key(store.paths.defaultProfile): 7]

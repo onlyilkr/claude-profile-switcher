@@ -137,8 +137,7 @@ public final class Switcher {
     static func syncPinsBeforeLaunch(target: Profile, among: [Profile], openFolders: [URL], enabled: Bool, transfer: ChatTransfer,
                                      lastUsed: (Profile) -> Date?, log: (String) -> Void, logError: (String) -> Void) {
         guard enabled else { return }
-        let key = { (url: URL) in url.resolvingSymlinksInPath().standardizedFileURL.path }
-        if openFolders.contains(where: { key($0) == key(target.path) }) { return }
+        if openFolders.contains(where: { ProfileStore.sameItem($0, target.path) }) { return }
         let targetIDs = transfer.chatIDs(in: target)
         guard let source = PinSync.source(for: target, among: among, lastUsed: lastUsed, transfer: transfer, targetIDs: targetIDs) else { return }
         do {
