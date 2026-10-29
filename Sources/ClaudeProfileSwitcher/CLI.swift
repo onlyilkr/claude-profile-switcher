@@ -87,9 +87,10 @@ enum CLI {
         let paths = options["--home"].map { Paths(home: URL(fileURLWithPath: $0)) } ?? Paths()
         // Works without Claude, so routing can be turned off after Claude was removed.
         if switches.contains("--revert") {
-            let done = Switcher.disableRouting(paths: paths, ownBundleID: appBundle.bundleIdentifier ?? "io.github.onlyilkr.ClaudeProfileSwitcher")
-            print(done.isEmpty ? "Nothing to put back: sign-in routing had not changed anything." : done.map { "- \($0)" }.joined(separator: "\n"))
-            return 0
+            let (done, failures) = Switcher.disableRouting(paths: paths, ownBundleID: appBundle.bundleIdentifier ?? "io.github.onlyilkr.ClaudeProfileSwitcher")
+            print(done.isEmpty && failures.isEmpty ? "Nothing to put back: sign-in routing had not changed anything." : done.map { "- \($0)" }.joined(separator: "\n"))
+            for line in failures { FileHandle.standardError.write(Data("- \(line)\n".utf8)) }
+            return failures.isEmpty ? 0 : 1
         }
         let sw: Switcher
         do { sw = try Switcher(paths: paths, ownBundleID: appBundle.bundleIdentifier, claudePath: options["--claude-path"]) } catch { return fail(error.localizedDescription) }
@@ -103,7 +104,7 @@ enum CLI {
             if switches.contains("--shared-chats") { sharedChats(sw); return 0 }
             if switches.contains("--unlink-chats") { return unlinkChats(sw) }
             if switches.contains("--route-sign-ins") {
-                sw.enableRouting()
+                try sw.enableRouting()
                 print("Sign-in routing is on. Browser sign-ins now go to the account that asked for them.")
                 if !menuBarAppRunning(sw) {
                     print("Keep the menu bar app running: Claude takes claude:// links back each time it starts, and the app takes them again.")

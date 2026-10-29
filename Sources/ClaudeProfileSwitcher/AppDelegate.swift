@@ -183,12 +183,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         a.setRouting = { [weak self] on in
             guard let sw = self?.switcher else { return }
-            if on { sw.enableRouting() } else { _ = sw.disableRouting() }
+            if on {
+                do { try sw.enableRouting() } catch { self?.state.errorMessage = error.localizedDescription }
+            } else {
+                let failures = sw.disableRouting().failures
+                if !failures.isEmpty { self?.state.errorMessage = failures.joined(separator: "\n") }
+            }
             self?.refresh()
         }
         a.decideRouting = { [weak self] yes in
             guard let sw = self?.switcher else { return }
-            if yes { sw.enableRouting() } else { self?.save("SignInRouting", false) }
+            if yes {
+                do { try sw.enableRouting() } catch { self?.state.errorMessage = error.localizedDescription }
+            } else { self?.save("SignInRouting", false) }
             self?.refresh()
         }
         a.setOtherLinks = { [weak self] id in

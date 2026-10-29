@@ -488,3 +488,33 @@ final class PendingSignInTests: XCTestCase {
         XCTAssertEqual(marker.get(now: t0 + 91), ["A", "B"])
     }
 }
+
+final class ClaudeLookupTests: XCTestCase {
+    /// A fake app bundle: only an Info.plist and an executable, never the real Claude.
+    private func makeBundle(_ name: String, id: String) throws -> URL {
+        let app = try tempDir().appendingPathComponent(name)
+        let macOS = app.appendingPathComponent("Contents/MacOS")
+        try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
+        let plist: [String: Any] = ["CFBundleIdentifier": id, "CFBundleExecutable": "run", "CFBundleShortVersionString": "1.0"]
+        try (plist as NSDictionary).write(to: app.appendingPathComponent("Contents/Info.plist"))
+        let exe = macOS.appendingPathComponent("run")
+        try Data("#!/bin/sh\n".utf8).write(to: exe)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exe.path)
+        return app
+    }
+
+    func testStrictLocateRejectsAnotherApp() throws {
+        let fake = try makeBundle("Calc.app", id: "com.example.calc")
+        XCTAssertThrowsError(try ClaudeApp.locate(override: fake.path, strict: true))
+    }
+
+    func testStrictLocateAcceptsClaudesBundleID() throws {
+        let claude = try makeBundle("Claude.app", id: ClaudeApp.bundleID)
+        XCTAssertEqual(try ClaudeApp.locate(override: claude.path, strict: true).url.path, claude.path)
+    }
+
+    func testSavedPathToAnotherAppIsSkipped() throws {
+        let fake = try makeBundle("Calc.app", id: "com.example.calc")
+        XCTAssertNotEqual(try? ClaudeApp.locate(override: fake.path).url.path, fake.path)
+    }
+}

@@ -31,6 +31,10 @@ public final class Switcher {
         self.store = ProfileStore(paths: paths, settings: settings) {
             ProfileStore.runningMap(bundleID: ClaudeApp.bundleID, defaultFolder: defaultFolder)
         }
+        if claudePath == nil, let saved = settings.claudePath, !saved.isEmpty,
+           URL(fileURLWithPath: (saved as NSString).expandingTildeInPath).standardizedFileURL.path != claude.url.standardizedFileURL.path {
+            log("ClaudePath in settings.json is not a usable Claude app; using the one macOS knows.")
+        }
     }
 
     public func refreshClaude() {
@@ -273,47 +277,61 @@ public final class Switcher {
 
     /// Makes the switcher the app macOS opens claude:// links with. Claude takes that back
     /// every time it starts, so the menu bar app takes it again whenever it notices.
-    public func enableRouting() {
-        if settings["RouterBackup"] == nil, let current = LinkHandler.current(scheme: "claude"),
-           current.caseInsensitiveCompare(ownBundleID) != .orderedSame {
-            try? settings.set("RouterBackup", current)
+    public func enableRouting() throws {
+        let current = LinkHandler.current(scheme: "claude")
+        let status = LinkHandler.set(scheme: "claude", bundleID: ownBundleID)
+        guard status == noErr else {
+            throw SwitcherError(L("macOS did not make the switcher the claude:// handler (status \(status)).",
+                                  "macOS switcher'ı claude:// işleyicisi yapmadı (durum \(status))."))
         }
-        LinkHandler.set(scheme: "claude", bundleID: ownBundleID)
-        try? settings.set("SignInRouting", true)
+        if settings["RouterBackup"] == nil, let current, current.caseInsensitiveCompare(ownBundleID) != .orderedSame {
+            try settings.set("RouterBackup", current)
+        }
+        try settings.set("SignInRouting", true)
         log("Sign-in routing turned on.")
     }
 
-    /// Returns one line per thing done.
-    public func disableRouting() -> [String] {
+    /// `done`: one line per thing done. `failures`: what could not be done.
+    public func disableRouting() -> (done: [String], failures: [String]) {
         Switcher.disableRouting(paths: paths, ownBundleID: ownBundleID)
     }
 
     /// Needs no Claude, so routing can be turned off after Claude was removed.
-    public static func disableRouting(paths: Paths, ownBundleID: String) -> [String] {
+    public static func disableRouting(paths: Paths, ownBundleID: String) -> (done: [String], failures: [String]) {
         let settings = Settings(file: paths.settingsFile)
         PendingSignIn(file: paths.pendingSignIn).clear()
         var done: [String] = []
+        var failures: [String] = []
         // The handler goes back first: it is what matters even when settings.json cannot be saved.
         if LinkHandler.current(scheme: "claude")?.caseInsensitiveCompare(ownBundleID) == .orderedSame {
             let original = (settings["RouterBackup"] as? String) ?? ClaudeApp.bundleID
-            LinkHandler.set(scheme: "claude", bundleID: original)
-            done.append(L("gave claude:// links back to \(original)", "claude:// linkleri yeniden \(original) uygulamasına verildi"))
+            let status = LinkHandler.set(scheme: "claude", bundleID: original)
+            if status == noErr {
+                done.append(L("gave claude:// links back to \(original)", "claude:// linkleri yeniden \(original) uygulamasına verildi"))
+            } else {
+                failures.append(L("could not give claude:// links back to \(original) (status \(status))",
+                                  "claude:// linkleri \(original) uygulamasına geri verilemedi (durum \(status))"))
+            }
         }
         do {
             try settings.set("SignInRouting", false)
             try settings.set("RouterBackup", nil)
         } catch {
-            done.append(L("could not update settings.json: \(error.localizedDescription)", "settings.json güncellenemedi: \(error.localizedDescription)"))
+            failures.append(L("could not update settings.json: \(error.localizedDescription)", "settings.json güncellenemedi: \(error.localizedDescription)"))
         }
         append("Sign-in routing turned off.", to: paths.routerLog)
-        return done
+        return (done, failures)
     }
 
     /// Called on a timer. True when the handler had to be taken back.
     @discardableResult
     public func retakeRouterIfNeeded() -> Bool {
         if routingOn, !routerRegistered {
-            LinkHandler.set(scheme: "claude", bundleID: ownBundleID)
+            let status = LinkHandler.set(scheme: "claude", bundleID: ownBundleID)
+            guard status == noErr else {
+                log("Could not take the claude:// handler back (status \(status)).")
+                return false
+            }
             log("Took the claude:// handler back.")
             return true
         }
