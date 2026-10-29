@@ -52,6 +52,7 @@ final class SwitcherWritingTests: XCTestCase {
         XCTAssertThrowsError(try sw.delete(profile)) { XCTAssertTrue($0.localizedDescription.contains("being updated")) }
         XCTAssertTrue(FileManager.default.fileExists(atPath: profile.path.path))
         other.dropWriting([profile])
+        sw.store.remove = { try FileManager.default.removeItem(at: $0) }  // not the real Trash
         XCTAssertNoThrow(try sw.delete(profile))
     }
 }

@@ -671,8 +671,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // there is left alone here; pin sync may change it when the target opens.
                     do {
                         // Starting accounts count as open, as they do for the linker. The target is claimed for
-                        // writing by this very transfer, so it must not count as open to itself.
-                        let open = sw.openFolders().filter { !ProfileStore.sameItem($0, target.path) }
+                        // writing by this very transfer, so it does not count as open to itself, unless a process is on it.
+                        let open = sw.openFolders().filter { !(ProfileStore.sameItem($0, target.path) && sw.store.isRunning(target) == nil) }
                         o.pinned = try sw.transfer.carryPins(of: o.copiedSessions, from: source, to: target, openFolders: open)
                     } catch {
                         o.skipped.append(L("Pins were not carried over: \(error.localizedDescription)", "Pinler taşınamadı: \(error.localizedDescription)"))
