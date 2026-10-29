@@ -401,7 +401,6 @@ final class UsageAgeTests: XCTestCase {
     }
 }
 
-
 final class PendingSignInTests: XCTestCase {
     var file: URL!
     var marker: PendingSignIn!
@@ -430,12 +429,12 @@ final class PendingSignInTests: XCTestCase {
     }
 
     func testRemoveKeepsTheOthers() {
-        marker.set("A", now: t0); marker.set("B", now: t0); marker.remove("A")
+        marker.set("A", now: t0); marker.set("B", now: t0); marker.remove("A", now: t0)
         XCTAssertEqual(marker.get(now: t0), ["B"])
     }
 
     func testRemovingTheLastEntryDeletesTheFile() {
-        marker.set("A", now: t0); marker.remove("A")
+        marker.set("A", now: t0); marker.remove("A", now: t0)
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
     }
 

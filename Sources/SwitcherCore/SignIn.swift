@@ -81,14 +81,13 @@ public struct PendingSignIn {
         entries().filter { $0.expires > now.timeIntervalSince1970 }.reversed().map(\.id)
     }
 
-    public func remove(_ id: String) {
+    public func remove(_ id: String, now: Date = Date()) {
         try? FileLock.exclusively(lockFile) {
-            let now = Date().timeIntervalSince1970
-            write(entries().filter { $0.expires > now && $0.id != id })
+            write(entries().filter { $0.expires > now.timeIntervalSince1970 && $0.id != id })
         }
     }
 
-    public func clear() { try? FileLock.exclusively(lockFile) { try? FileManager.default.removeItem(at: file) } }
+    public func clear() { try? FileLock.exclusively(lockFile) { try FileManager.default.removeItem(at: file) } }
 }
 
 public enum SignInRouting {
