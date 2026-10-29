@@ -255,7 +255,8 @@ public final class Switcher {
         let base = NSWorkspace.shared.icon(forFile: claude.url.path)
         let letter = target.isDefault ? nil : Badge.letter(for: target.name)
         let color = target.isDefault ? nil : badgeColor(target)
-        return try launchers.create(profile: target) { Badge.badged(base: base, letter: letter, color: color, pixels: $0) }
+        return try launchers.create(profile: target, icon: { Badge.badged(base: base, letter: letter, color: color, pixels: $0) },
+                                    onRegisterFailure: { self.logError("Launch Services did not register the launcher for '\(target.name)' (status \($0)); Spotlight may not list it.") })
     }
 
     public func badgeColor(_ target: Profile) -> NSColor {

@@ -160,6 +160,39 @@ final class SettingsTests: XCTestCase {
         XCTAssertNotEqual(a, b, "a new profile gets the least used colour")
         XCTAssertEqual(Badge.colorIndex(for: "A", settings: s, alive: ["A", "B"]), a, "and keeps it")
     }
+
+    func testNegativeStoredColourDoesNotCrash() throws {
+        let settings = Settings(file: try tempDir().appendingPathComponent("settings.json"))
+        try settings.set("Colors", ["Work": -3])
+        XCTAssertEqual(Badge.colorIndex(for: "Work", settings: settings, alive: ["Work"]), 5)
+        XCTAssertTrue((0..<8).contains(Badge.colorIndex(for: "Home", settings: settings, alive: ["Work", "Home"])))
+    }
+
+    func testLauncherStaysInItsFolderWhateverTheLabel() throws {
+        let dir = try tempDir()
+        let launchers = Launchers(dir: dir, ownBundleID: "test.app")
+        for label in ["../../evil", "a/b", ".hidden", "x:y", "line\nbreak", "  "] {
+            let url = launchers.url(forLabel: label)
+            XCTAssertEqual(url.deletingLastPathComponent().standardizedFileURL, dir.standardizedFileURL)
+            XCTAssertTrue(url.lastPathComponent.hasPrefix("Claude - "))
+            XCTAssertFalse(url.lastPathComponent.dropFirst("Claude - ".count).contains("/"))
+        }
+    }
+
+    func testConcurrentLabelEditsKeepEveryLabel() throws {
+        let file = try tempDir().appendingPathComponent("settings.json")
+        let app = Settings(file: file), cli = Settings(file: file)
+        let group = DispatchGroup()
+        for (settings, range) in [(app, 0..<50), (cli, 50..<100)] {
+            group.enter()
+            Thread.detachNewThread {
+                for id in range { try? settings.setLabel("\(id)", "L\(id)") }
+                group.leave()
+            }
+        }
+        group.wait()
+        XCTAssertEqual(Settings(file: file).labels.count, 100)
+    }
 }
 
 func tempDir() throws -> URL {
