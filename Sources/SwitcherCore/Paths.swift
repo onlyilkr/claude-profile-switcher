@@ -27,6 +27,7 @@ public struct Paths {
     public var routerLog: URL { switcherHome.appendingPathComponent("sign-in-router.log") }
     public var errorLog: URL { switcherHome.appendingPathComponent("switcher-error.log") }
     public var pendingSignIn: URL { switcherHome.appendingPathComponent("pending-sign-in.json") }
+    public var claimsFile: URL { switcherHome.appendingPathComponent("claims.json") }
 
     /// Launcher apps go where Spotlight and Launchpad look, without needing admin rights.
     public var launcherDir: URL { home.appendingPathComponent("Applications", isDirectory: true) }

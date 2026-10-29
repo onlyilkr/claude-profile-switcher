@@ -13,22 +13,9 @@ public final class Switcher {
     public let launchers: Launchers
     public let transfer: ChatTransfer
 
-    /// Launches this process started that have not shown up as a process yet. Starting a
-    /// profile twice in that window would put two copies on one folder.
-    /// Read from background threads too (the linker's open-folder check runs off the main thread), so
-    /// every access goes through `startingLock`; a main-thread snapshot would miss launches made during a long link.
-    private var starting: [String: Date] = [:]
-    private let startingLock = NSLock()
-
-    private func setStarting(_ id: String, _ date: Date?) {
-        startingLock.lock(); defer { startingLock.unlock() }
-        starting[id] = date
-    }
-
-    private func startedAt(_ id: String) -> Date? {
-        startingLock.lock(); defer { startingLock.unlock() }
-        return starting[id]
-    }
+    /// Launches that were started but may not show up as a process yet, shared with the command line through a file.
+    /// Starting a profile twice in that window would put two copies on one folder.
+    public let claims: ProfileClaims
 
     public init(paths: Paths = Paths(), ownBundleID: String? = nil, claudePath: String? = nil) throws {
         self.paths = paths
@@ -38,6 +25,7 @@ public final class Switcher {
         self.pending = PendingSignIn(file: paths.pendingSignIn)
         self.launchers = Launchers(dir: paths.launcherDir, ownBundleID: self.ownBundleID)
         self.transfer = ChatTransfer(transcriptsRoot: paths.transcriptsRoot)
+        self.claims = ProfileClaims(file: paths.claimsFile)
         let defaultFolder = paths.defaultProfile
         // By bundle id, so any copy of Claude counts, wherever it was started from.
         self.store = ProfileStore(paths: paths, settings: settings) {
@@ -66,23 +54,42 @@ public final class Switcher {
     public func launch(_ target: Profile, link: String? = nil, expectSignIn: Bool = true,
                        completion: ((Result<LaunchResult, Error>) -> Void)? = nil) {
         refreshClaude()
-        if let pid = store.isRunning(target) {
-            setStarting(target.id, nil)
+        if !target.isDefault {
+            do {
+                try FileManager.default.createDirectory(at: target.path, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            } catch {
+                completion?(.failure(error))
+                return
+            }
+        }
+        // One decision for the whole machine: the running check and the claim happen under one lock.
+        let decision: ProfileClaims.LaunchDecision
+        do {
+            decision = try claims.claimLaunch(target.id) { store.isRunning(target) }
+        } catch {
+            completion?(.failure(error))
+            return
+        }
+        switch decision {
+        case .running(let pid):
+            claims.dropStarting(target.id)
             if let link { send(link, to: pid) }
             Focus.bring(pid: pid)
             completion?(.success(.focused))
             return
-        }
-        if isStarting(target) {
+        case .starting:
             if let link { whenRunning(target) { self.send(link, to: $0) } }
             completion?(.success(.starting))
             return
+        case .writing:
+            completion?(.failure(SwitcherError(L("'\(target.name)' is being updated by the switcher. Try again in a moment.",
+                                                 "'\(target.name)' switcher tarafından güncelleniyor. Birazdan tekrar deneyin."))))
+            return
+        case .go:
+            break
         }
-        if !target.isDefault {
-            try? FileManager.default.createDirectory(at: target.path, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            // A profile that is not signed in yet is about to be: its sign-in is the one to expect.
-            if expectSignIn, routingOn, SignInState.signedIn(profileDir: target.path) != true { pending.set(target.id) }
-        }
+        // A profile that is not signed in yet is about to be: its sign-in is the one to expect.
+        if expectSignIn, routingOn, SignInState.signedIn(profileDir: target.path) != true { pending.set(target.id) }
 
         let config = NSWorkspace.OpenConfiguration()
         // Always a new copy: with any Claude already running, Launch Services would
@@ -96,11 +103,10 @@ public final class Switcher {
 
         syncPinsBeforeLaunch(target)
 
-        setStarting(target.id, Date())
         let done: (NSRunningApplication?, Error?) -> Void = { _, error in
             DispatchQueue.main.async {
                 if let error {
-                    self.setStarting(target.id, nil)
+                    self.claims.dropStarting(target.id)
                     completion?(.failure(error))
                 } else {
                     completion?(.success(.started))
@@ -119,7 +125,8 @@ public final class Switcher {
     private func syncPinsBeforeLaunch(_ target: Profile) {
         guard settings.syncPins else { return }
         let profiles = store.list(status: true)
-        let open = profiles.filter { $0.isRunning || isStarting($0) }.map(\.path)
+        // The target holds its own starting claim by now; it counts as open only when it is really running.
+        let open = profiles.filter { $0.isRunning || ($0.id != target.id && isStarting($0)) }.map(\.path)
         Switcher.syncPinsBeforeLaunch(target: target, among: profiles, openFolders: open, enabled: true, transfer: transfer,
                                       lastUsed: { ProfileStore.lastUsed($0.path) },
                                       log: { self.log($0) }, logError: { self.logError($0) })
@@ -152,11 +159,18 @@ public final class Switcher {
         store.list(status: true).filter { $0.isRunning || isStarting($0) }.map(\.path)
     }
 
-    /// Launched from here in the last 20 s and not visible as a process yet. Treated as
+    /// Launched (from here or the command line) in the last 20 s and not visible as a process yet. Treated as
     /// open by everything that must not touch an open profile.
     public func isStarting(_ target: Profile) -> Bool {
-        guard let since = startedAt(target.id) else { return false }
-        return Date().timeIntervalSince(since) < 20 && store.isRunning(target) == nil
+        claims.startedRecently(target.id) && store.isRunning(target) == nil
+    }
+
+    /// Runs `body` with every profile claimed for writing, so no launch (here or from the command line) starts one
+    /// meanwhile. Throws when one is open, starting or already being written.
+    public func whileWriting<T>(_ profiles: [Profile], _ body: () throws -> T) throws -> T {
+        try claims.claimWriting(profiles) { self.store.isRunning($0) != nil || self.claims.startedRecently($0.id) }
+        defer { claims.dropWriting(profiles) }
+        return try body()
     }
 
     /// The profile's folder, then its ProfileArgs without any data folder switch of their
