@@ -518,3 +518,25 @@ final class ClaudeLookupTests: XCTestCase {
         XCTAssertNotEqual(try? ClaudeApp.locate(override: fake.path).url.path, fake.path)
     }
 }
+
+final class QuitAndRetakeWaitTests: XCTestCase {
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func testStartTimeOfThisProcessIsStable() {
+        let a = ProcessScanner.startTime(pid: getpid())
+        XCTAssertNotNil(a)
+        XCTAssertEqual(a, ProcessScanner.startTime(pid: getpid()))
+    }
+
+    func testStartTimeOfAMissingProcessIsNil() { XCTAssertNil(ProcessScanner.startTime(pid: 999_999)) }
+
+    func testRetakeWaitStopsAtTheLimitWithoutARetake() {
+        XCTAssertFalse(RetakeWait.done(start: t0, lastRetake: nil, now: t0 + 19))
+        XCTAssertTrue(RetakeWait.done(start: t0, lastRetake: nil, now: t0 + 20))
+    }
+
+    func testRetakeWaitStopsThreeSecondsAfterTheLastRetake() {
+        XCTAssertFalse(RetakeWait.done(start: t0, lastRetake: t0 + 5, now: t0 + 7))
+        XCTAssertTrue(RetakeWait.done(start: t0, lastRetake: t0 + 5, now: t0 + 8))
+    }
+}

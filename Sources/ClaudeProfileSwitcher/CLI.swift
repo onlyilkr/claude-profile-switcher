@@ -244,10 +244,12 @@ enum CLI {
     /// bar app to take it back, a command line launch stays a little while to do it.
     static func retakeWhileStarting(_ sw: Switcher) {
         guard sw.routingOn, !menuBarAppRunning(sw) else { return }
-        let until = Date().addingTimeInterval(20)
-        while Date() < until {
+        FileHandle.standardError.write(Data((L("Keeping the claude:// handler while Claude starts (up to 20 s); the menu bar app does this when it runs.", "Claude başlarken claude:// işleyicisi korunuyor (en fazla 20 sn); menü çubuğu uygulaması çalışırken bunu o yapar.") + "\n").utf8))
+        let start = Date()
+        var lastRetake: Date?
+        while !RetakeWait.done(start: start, lastRetake: lastRetake, now: Date()) {
             RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(1))
-            sw.retakeRouterIfNeeded()
+            if sw.retakeRouterIfNeeded() { lastRetake = Date() }
         }
     }
 

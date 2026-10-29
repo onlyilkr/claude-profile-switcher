@@ -223,12 +223,15 @@ public final class Switcher {
     /// Asks one copy to quit, and reports whether it did within the time given.
     public func quit(_ target: Profile, timeout: TimeInterval = 30, completion: @escaping (Bool) -> Void) {
         guard let pid = store.isRunning(target), let app = NSRunningApplication(processIdentifier: pid) else { completion(true); return }
+        let started = ProcessScanner.startTime(pid: pid)
         app.terminate()
         let until = Date().addingTimeInterval(timeout)
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
             // Gone means gone from the kernel, not just from Launch Services' list: the copy
-            // writes its chat list and pins while it quits.
-            if kill(pid, 0) != 0, errno == ESRCH { timer.invalidate(); completion(true) }
+            // writes its chat list and pins while it quits. A different start time means the
+            // pid went to another process.
+            let reused = started != nil && ProcessScanner.startTime(pid: pid) != started
+            if (kill(pid, 0) != 0 && errno == ESRCH) || reused { timer.invalidate(); completion(true) }
             else if Date() > until { timer.invalidate(); completion(false) }
         }
     }
