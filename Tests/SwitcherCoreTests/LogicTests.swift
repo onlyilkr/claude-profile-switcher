@@ -32,26 +32,26 @@ final class RoutingTests: XCTestCase {
     func testPendingWins() {
         let c = [SignInRouting.Candidate(profile: profile("Work", pid: nil), signedIn: nil),
                  SignInRouting.Candidate(profile: profile("Home", pid: 20), signedIn: false)]
-        XCTAssertEqual(SignInRouting.select(c, pendingID: "Work", frontmostPID: 20)?.profile.id, "Work")
+        XCTAssertEqual(SignInRouting.select(c, pendingIDs: ["Work"], frontmostPID: 20)?.profile.id, "Work")
     }
 
     func testPendingNeverDefault() {
         let c = [SignInRouting.Candidate(profile: profile(Profile.defaultID, pid: 1), signedIn: false)]
-        XCTAssertNil(SignInRouting.select(c, pendingID: Profile.defaultID, frontmostPID: nil))
+        XCTAssertNil(SignInRouting.select(c, pendingIDs: [Profile.defaultID], frontmostPID: nil))
     }
 
     func testOnlySignedOutAccount() {
         let c = [SignInRouting.Candidate(profile: profile("A", pid: 10), signedIn: true),
                  SignInRouting.Candidate(profile: profile("B", pid: 11), signedIn: false),
                  SignInRouting.Candidate(profile: profile("C", pid: nil), signedIn: nil)]
-        XCTAssertEqual(SignInRouting.select(c, pendingID: nil, frontmostPID: 10)?.profile.id, "B")
+        XCTAssertEqual(SignInRouting.select(c, pendingIDs: [], frontmostPID: 10)?.profile.id, "B")
     }
 
     func testFrontmostWhenAmbiguous() {
         let c = [SignInRouting.Candidate(profile: profile("A", pid: 10), signedIn: false),
                  SignInRouting.Candidate(profile: profile("B", pid: 11), signedIn: false)]
-        XCTAssertEqual(SignInRouting.select(c, pendingID: nil, frontmostPID: 11)?.profile.id, "B")
-        XCTAssertNil(SignInRouting.select(c, pendingID: nil, frontmostPID: 99))
+        XCTAssertEqual(SignInRouting.select(c, pendingIDs: [], frontmostPID: 11)?.profile.id, "B")
+        XCTAssertNil(SignInRouting.select(c, pendingIDs: [], frontmostPID: 99))
     }
 
     func testPendingMarkerExpires() throws {
@@ -59,9 +59,24 @@ final class RoutingTests: XCTestCase {
         let marker = PendingSignIn(file: dir.appendingPathComponent("p.json"))
         let now = Date()
         marker.set("Work", minutes: 15, now: now)
-        XCTAssertEqual(marker.get(now: now.addingTimeInterval(60)), "Work")
-        XCTAssertNil(marker.get(now: now.addingTimeInterval(16 * 60)))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.file.path), "an expired marker is cleared")
+        XCTAssertEqual(marker.get(now: now.addingTimeInterval(60)), ["Work"])
+        XCTAssertEqual(marker.get(now: now.addingTimeInterval(16 * 60)), [])
+    }
+
+    func testSelectPrefersTheFrontmostOfSeveralPending() {
+        let c = [SignInRouting.Candidate(profile: profile("A", pid: 10), signedIn: false),
+                 SignInRouting.Candidate(profile: profile("B", pid: 20), signedIn: false)]
+        let decision = SignInRouting.select(c, pendingIDs: ["B", "A"], frontmostPID: 10)
+        XCTAssertEqual(decision?.profile.id, "A")
+        XCTAssertEqual(decision?.reason, "launched while signed out, frontmost of several")
+    }
+
+    func testSelectFallsBackToTheMostRecentPending() {
+        let c = [SignInRouting.Candidate(profile: profile("A", pid: 10), signedIn: false),
+                 SignInRouting.Candidate(profile: profile("B", pid: 20), signedIn: false)]
+        let decision = SignInRouting.select(c, pendingIDs: ["B", "A"], frontmostPID: nil)
+        XCTAssertEqual(decision?.profile.id, "B")
+        XCTAssertEqual(decision?.reason, "launched while signed out, most recent of several")
     }
 
     func testSignedInDetection() {
@@ -383,5 +398,49 @@ final class UsageAgeTests: XCTestCase {
     func testUsageLinkIsOneTheSwitcherAccepts() {
         XCTAssertTrue(SignInLinks.isSafe(Switcher.usageLink))
         XCTAssertFalse(SignInLinks.isSignIn(Switcher.usageLink), "never treated as a sign-in")
+    }
+}
+
+
+final class PendingSignInTests: XCTestCase {
+    var file: URL!
+    var marker: PendingSignIn!
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+
+    override func setUpWithError() throws {
+        file = try tempDir().appendingPathComponent("pending-sign-in.json")
+        marker = PendingSignIn(file: file)
+    }
+
+    func testTwoPendingAccountsAreBothKept() {
+        marker.set("A", now: t0); marker.set("B", now: t0 + 1)
+        XCTAssertEqual(marker.get(now: t0 + 2), ["B", "A"])
+    }
+
+    func testGetIgnoresExpiredEntriesWithoutWriting() throws {
+        marker.set("A", minutes: 1, now: t0)
+        let before = try Data(contentsOf: file)
+        XCTAssertEqual(marker.get(now: t0 + 120), [])
+        XCTAssertEqual(try Data(contentsOf: file), before)
+    }
+
+    func testReads110SingleMarker() throws {
+        try JSONSerialization.data(withJSONObject: ["Profile": "A", "Expires": t0.timeIntervalSince1970 + 60]).write(to: file)
+        XCTAssertEqual(marker.get(now: t0), ["A"])
+    }
+
+    func testRemoveKeepsTheOthers() {
+        marker.set("A", now: t0); marker.set("B", now: t0); marker.remove("A")
+        XCTAssertEqual(marker.get(now: t0), ["B"])
+    }
+
+    func testRemovingTheLastEntryDeletesTheFile() {
+        marker.set("A", now: t0); marker.remove("A")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testSetAgainMovesToFrontAndDropsExpired() {
+        marker.set("A", minutes: 1, now: t0); marker.set("B", now: t0 + 30); marker.set("A", now: t0 + 90)
+        XCTAssertEqual(marker.get(now: t0 + 91), ["A", "B"])
     }
 }

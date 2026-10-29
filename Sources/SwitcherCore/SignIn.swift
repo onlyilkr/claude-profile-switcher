@@ -39,27 +39,56 @@ public enum SignInState {
     }
 }
 
-/// "This profile was launched signed out and is expecting a sign-in", for 15 minutes.
+/// "These profiles were launched signed out and are expecting a sign-in", each for 15 minutes.
+/// Several accounts can wait at once; the file is shared with the command line, so every change
+/// runs under a lock. Failures are silent, like the writes before it.
 public struct PendingSignIn {
     public let file: URL
 
     public init(file: URL) { self.file = file }
 
+    private struct Entry { let id: String; let expires: Double }
+
+    private var lockFile: URL { URL(fileURLWithPath: file.path + ".lock") }
+
+    /// Oldest first. Reads the 1.1.0 single-object file as one entry.
+    private func entries() -> [Entry] {
+        guard let data = try? Data(contentsOf: file),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        let raw = (json["Pending"] as? [[String: Any]]) ?? [json]
+        return raw.compactMap { item in
+            guard let id = item["Profile"] as? String, let expires = item["Expires"] as? Double else { return nil }
+            return Entry(id: id, expires: expires)
+        }
+    }
+
+    private func write(_ list: [Entry]) {
+        if list.isEmpty { try? FileManager.default.removeItem(at: file); return }
+        let json: [String: Any] = ["Pending": list.map { ["Profile": $0.id, "Expires": $0.expires] }]
+        if let data = try? JSONSerialization.data(withJSONObject: json) { try? data.write(to: file, options: .atomic) }
+    }
+
     public func set(_ id: String, minutes: Double = 15, now: Date = Date()) {
-        let marker: [String: Any] = ["Profile": id, "Expires": now.addingTimeInterval(minutes * 60).timeIntervalSince1970]
-        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        if let data = try? JSONSerialization.data(withJSONObject: marker) { try? data.write(to: file, options: .atomic) }
+        try? FileLock.exclusively(lockFile) {
+            var list = entries().filter { $0.expires > now.timeIntervalSince1970 && $0.id != id }
+            list.append(Entry(id: id, expires: now.addingTimeInterval(minutes * 60).timeIntervalSince1970))
+            write(list)
+        }
     }
 
-    public func get(now: Date = Date()) -> String? {
-        guard let data = try? Data(contentsOf: file) else { return nil }
-        guard let marker = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let id = marker["Profile"] as? String, let expires = marker["Expires"] as? Double,
-              expires > now.timeIntervalSince1970 else { clear(); return nil }
-        return id
+    /// Live ids, most recently set first. Never writes: expired entries are dropped by `set`/`remove`.
+    public func get(now: Date = Date()) -> [String] {
+        entries().filter { $0.expires > now.timeIntervalSince1970 }.reversed().map(\.id)
     }
 
-    public func clear() { try? FileManager.default.removeItem(at: file) }
+    public func remove(_ id: String) {
+        try? FileLock.exclusively(lockFile) {
+            let now = Date().timeIntervalSince1970
+            write(entries().filter { $0.expires > now && $0.id != id })
+        }
+    }
+
+    public func clear() { try? FileLock.exclusively(lockFile) { try? FileManager.default.removeItem(at: file) } }
 }
 
 public enum SignInRouting {
@@ -74,12 +103,19 @@ public enum SignInRouting {
         public let reason: String
     }
 
-    /// Where a sign-in goes, first rule that applies: the account launched while signed
-    /// out, the only open account that is signed out, the open account whose window was
-    /// used last. nil leaves it to Default.
-    public static func select(_ candidates: [Candidate], pendingID: String?, frontmostPID: pid_t?) -> Decision? {
-        if let pendingID, let hit = candidates.first(where: { $0.profile.id == pendingID && !$0.profile.isDefault }) {
-            return Decision(profile: hit.profile, reason: "launched while signed out")
+    /// Where a sign-in goes, first rule that applies: an account launched while signed out
+    /// (the frontmost of several, else the most recent), the only open account that is signed
+    /// out, the open account whose window was used last. nil leaves it to Default.
+    public static func select(_ candidates: [Candidate], pendingIDs: [String], frontmostPID: pid_t?) -> Decision? {
+        let waiting = pendingIDs.compactMap { id in candidates.first(where: { $0.profile.id == id && !$0.profile.isDefault }) }
+        if waiting.count == 1 {
+            return Decision(profile: waiting[0].profile, reason: "launched while signed out")
+        }
+        if waiting.count > 1 {
+            if let frontmostPID, let hit = waiting.first(where: { $0.profile.pid == frontmostPID }) {
+                return Decision(profile: hit.profile, reason: "launched while signed out, frontmost of several")
+            }
+            return Decision(profile: waiting[0].profile, reason: "launched while signed out, most recent of several")
         }
         let open = candidates.filter { $0.profile.isRunning && !$0.profile.isDefault }
         let signedOut = open.filter { $0.signedIn == false }

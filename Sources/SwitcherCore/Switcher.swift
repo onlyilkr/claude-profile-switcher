@@ -366,17 +366,17 @@ public final class Switcher {
         let front = WindowList.frontmost(among: Set(profiles.compactMap(\.pid)))
         // A profile that has signed in since (inside Claude's own window, which never comes
         // through here) is no longer waiting, whatever the marker says.
-        let pendingID = pending.get().flatMap { id in
-            store.resolve(id).map { SignInState.signedIn(profileDir: $0.path) == true ? nil : id } ?? nil
+        let pendingIDs = pending.get().filter { id in
+            store.resolve(id).map { SignInState.signedIn(profileDir: $0.path) != true } ?? false
         }
-        if let pick = SignInRouting.select(candidates, pendingID: pendingID, frontmostPID: front) {
+        if let pick = SignInRouting.select(candidates, pendingIDs: pendingIDs, frontmostPID: front) {
             deliver(link, to: pick.profile)
+            if pendingIDs.contains(pick.profile.id) { pending.remove(pick.profile.id) }
             log("Sign-in sent to '\(pick.profile.name)' (\(pick.reason)).")
         } else {
             deliver(link, to: defaultProfile)
             log("Sign-in sent to Default (no other account was waiting for one).")
         }
-        pending.clear()
     }
 
     // MARK: Logs
