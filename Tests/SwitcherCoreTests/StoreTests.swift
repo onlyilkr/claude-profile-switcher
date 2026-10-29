@@ -239,6 +239,37 @@ final class ChatTransferTests: XCTestCase {
                 "mcpServers": ["demo": ["command": "/bin/echo", "args": ["hi"]]]]
     }
 
+    func backups(of config: URL) throws -> [String] {
+        try FileManager.default.contentsOfDirectory(atPath: config.deletingLastPathComponent().path)
+            .filter { $0.hasPrefix(config.lastPathComponent + ".switcher-backup-") }
+    }
+
+    func assertWritePinsRefuses(_ config: [String: Any], file: StaticString = #filePath, line: UInt = #line) throws {
+        let url = ChatTransfer.configFile(target)
+        try write(url, config)
+        let original = try Data(contentsOf: url)
+        XCTAssertThrowsError(try transfer.writePins(["local_1"], to: target), file: file, line: line)
+        XCTAssertEqual(try Data(contentsOf: url), original, file: file, line: line)
+        XCTAssertTrue(try backups(of: url).isEmpty, "a refused file gets no backup", file: file, line: line)
+    }
+
+    func testWritePinsRefusesWhenPreferencesIsNotAnObject() throws {
+        try assertWritePinsRefuses(["mcpServers": ["x": [String: Any]()], "preferences": "oops"])
+    }
+
+    func testWritePinsRefusesWhenEpitaxyPrefsIsNotAnObject() throws {
+        try assertWritePinsRefuses(["mcpServers": ["x": [String: Any]()], "preferences": ["epitaxyPrefs": [1]]])
+    }
+
+    func testWritePinsKeepsMcpServers() throws {
+        let url = ChatTransfer.configFile(target)
+        try write(url, pinConfig(["local_old"]))
+        try transfer.writePins(["local_1"], to: target)
+        let root = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
+        XCTAssertEqual((root["mcpServers"] as? [String: Any])?.keys.sorted(), ["demo"])
+        XCTAssertEqual(transfer.pins(of: target), ["local_1"])
+    }
+
     func testPinsCarryOverInSourceOrderAfterTargetPins() throws {
         try record("a", cli: "ca")
         try record("b", cli: "cb")

@@ -197,10 +197,25 @@ public struct ChatTransfer {
                                       logReason: "config is not valid JSON")
             }
             root = parsed
-            try ChatTransfer.backUp(file)
         }
-        var preferences = (root["preferences"] as? [String: Any]) ?? [:]
-        var epitaxy = (preferences["epitaxyPrefs"] as? [String: Any]) ?? [:]
+        // A present value of the wrong type is a hand edit gone wrong; replacing it with a fresh
+        // object would silently drop what was there. Checked before the backup: nothing is written.
+        func unexpected(_ key: String) -> SwitcherError {
+            SwitcherError(L("\(file.path) has an unexpected '\(key)' value, so the pins were not written.\(afterwards)",
+                            "\(file.path) içindeki '\(key)' değeri beklenen biçimde değil, bu yüzden pinler yazılmadı.\(afterwards)"),
+                          logReason: "config has an unexpected shape")
+        }
+        var preferences: [String: Any] = [:]
+        if let value = root["preferences"] {
+            guard let object = value as? [String: Any] else { throw unexpected("preferences") }
+            preferences = object
+        }
+        var epitaxy: [String: Any] = [:]
+        if let value = preferences["epitaxyPrefs"] {
+            guard let object = value as? [String: Any] else { throw unexpected("epitaxyPrefs") }
+            epitaxy = object
+        }
+        if FileManager.default.fileExists(atPath: file.path) { try ChatTransfer.backUp(file) }
         epitaxy["starred-local-code-sessions"] = list
         preferences["epitaxyPrefs"] = epitaxy
         root["preferences"] = preferences
