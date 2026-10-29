@@ -349,6 +349,18 @@ final class AuditFixTests: XCTestCase {
         XCTAssertThrowsError(try ChatTransfer(transcriptsRoot: home).carryPins(of: [session], from: source, to: target, openFolders: [other]))
         XCTAssertEqual(try Data(contentsOf: shared), original, "an open profile's config is left alone")
     }
+
+    func testConcurrentAppendsKeepEveryLineWhole() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let log = dir.appendingPathComponent("router.log")
+        DispatchQueue.concurrentPerform(iterations: 4) { thread in
+            for n in 0..<100 { Switcher.append("t\(thread)-\(n)", to: log) }
+        }
+        let lines = try String(contentsOf: log).split(separator: "\n")
+        XCTAssertEqual(lines.count, 400)
+        XCTAssertTrue(lines.allSatisfy { $0.range(of: #"^\[[^\]]+\] t\d-\d+$"#, options: .regularExpression) != nil })
+    }
 }
 
 final class UsageAgeTests: XCTestCase {

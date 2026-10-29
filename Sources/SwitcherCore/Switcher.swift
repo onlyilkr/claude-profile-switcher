@@ -397,7 +397,8 @@ public final class Switcher {
         Switcher.append(message, to: paths.errorLog)
     }
 
-    /// One queue for every log line, from any thread, so lines and the rotation never race.
+    /// One queue for every log line within a process, and a file lock across the app and the command line,
+    /// so lines and the rotation never race. Logging never fails an action: every failure is silent.
     private static let logQueue = DispatchQueue(label: "ClaudeProfileSwitcher.log")
 
     static func append(_ message: String, to file: URL) {
@@ -405,17 +406,19 @@ public final class Switcher {
     }
 
     private static func appendNow(_ message: String, to file: URL) {
-        let fm = FileManager.default
-        try? fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        // One line per event, so this only grows large over years. Start over past 100 KB.
-        if let size = (try? fm.attributesOfItem(atPath: file.path))?[.size] as? Int, size > 100_000 { try? fm.removeItem(at: file) }
-        let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
-        if let handle = try? FileHandle(forWritingTo: file) {
-            handle.seekToEndOfFile()
-            handle.write(Data(line.utf8))
-            try? handle.close()
-        } else {
-            try? Data(line.utf8).write(to: file)
+        let lock = URL(fileURLWithPath: file.path + ".lock")
+        // A lock failure skips the line rather than risk an unlocked write.
+        try? FileLock.exclusively(lock) {
+            let fm = FileManager.default
+            // One line per event, so this only grows large over years. Start over past 100 KB.
+            if let size = (try? fm.attributesOfItem(atPath: file.path))?[.size] as? Int, size > 100_000 { try? fm.removeItem(at: file) }
+            let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
+            // O_APPEND with a single write keeps the line whole even if another process slipped in.
+            let fd = open(file.path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
+            guard fd >= 0 else { return }
+            defer { close(fd) }
+            let bytes = Array(line.utf8)
+            _ = bytes.withUnsafeBufferPointer { write(fd, $0.baseAddress, $0.count) }
         }
     }
 }
