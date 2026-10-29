@@ -261,7 +261,8 @@ Safety rules, the same as [claude-migrate](https://github.com/onlyilkr/claude-mi
   exists.
 - **Never while the target is open.** Claude keeps its chat list and pins in memory and writes them back
   when it quits, which would drop the copies. The switcher offers to quit the target, copy, and open it
-  again. An account the switcher has just started counts as open until its window is up, and is checked
+  again. While chats are being copied in, opening that account (from the panel, a launcher or the command line)
+  is refused until the copy finishes. An account the switcher has just started counts as open until its window is up, and is checked
   again right before anything is written.
 - **Never brings back a chat you deleted** in the target account.
 - **Skips chats that are already there**, also when they were resumed under a new id.
@@ -633,8 +634,8 @@ press **Sync**; read [Shared chats](#shared-chats) first.
    `claude://` links go back to Claude. `brew uninstall` does this for you.
 2. Optionally move extra accounts to the Trash from the panel, which also removes their launchers.
 3. Quit the switcher and remove the app: `brew uninstall --cask claude-profile-switcher`, or drag it to
-   the Trash. `brew uninstall --cask --zap claude-profile-switcher` also removes the switcher's settings
-   and logs.
+   the Trash. `brew uninstall --cask --zap claude-profile-switcher` also removes the switcher's settings,
+   logs and its backups of `claude_desktop_config.json`.
 
 Launchers you kept in `~/Applications` (`Claude - <name>.app`, including one for Default) stop working
 once the app is gone; drag them to the Trash too. Uninstalling never removes your extra accounts' folders (`~/Library/Application Support/ClaudeProfile-*`),

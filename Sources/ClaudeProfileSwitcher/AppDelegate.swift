@@ -670,8 +670,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // Pins follow the chats copied now, in the source's order. A chat that was already
                     // there is left alone here; pin sync may change it when the target opens.
                     do {
-                        // Starting accounts count as open, as they do for the linker.
-                        o.pinned = try sw.transfer.carryPins(of: o.copiedSessions, from: source, to: target, openFolders: sw.openFolders())
+                        // Starting accounts count as open, as they do for the linker. The target is claimed for
+                        // writing by this very transfer, so it must not count as open to itself.
+                        let open = sw.openFolders().filter { !ProfileStore.sameItem($0, target.path) }
+                        o.pinned = try sw.transfer.carryPins(of: o.copiedSessions, from: source, to: target, openFolders: open)
                     } catch {
                         o.skipped.append(L("Pins were not carried over: \(error.localizedDescription)", "Pinler taşınamadı: \(error.localizedDescription)"))
                     }
@@ -680,8 +682,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             } catch {
                 DispatchQueue.main.async {
-                    self?.alert(L("'\(target.name)' is open again", "'\(target.name)' yeniden açık"),
-                                L("Nothing was copied. Quit it and transfer again.", "Hiçbir şey kopyalanmadı. Kapatıp aktarımı tekrar deneyin.") + "\n" + error.localizedDescription, style: .warning)
+                    self?.alert(L("Nothing was copied to '\(target.name)'", "'\(target.name)' hesabına hiçbir şey kopyalanmadı"),
+                                error.localizedDescription, style: .warning)
                 }
                 return
             }

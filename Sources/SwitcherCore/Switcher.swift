@@ -156,10 +156,10 @@ public final class Switcher {
         }
     }
 
-    /// The folders of every profile that is running or starting: nothing may be written to these.
-    /// Safe to call from any thread.
+    /// The folders of every profile that is running, starting or being written by the switcher: nothing else
+    /// may be written to these. Safe to call from any thread.
     public func openFolders() -> [URL] {
-        store.list(status: true).filter { $0.isRunning || isStarting($0) }.map(\.path)
+        store.list(status: true).filter { $0.isRunning || isStarting($0) || claims.isWriting($0.id) }.map(\.path)
     }
 
     /// Launched (from here or the command line) in the last 20 s and not visible as a process yet. Treated as
@@ -252,6 +252,9 @@ public final class Switcher {
     public func delete(_ target: Profile) throws {
         if isStarting(target) {
             throw SwitcherError(L("'\(target.name)' is starting. Quit it before deleting it.", "'\(target.name)' açılıyor. Silmeden önce kapatın."))
+        }
+        if claims.isWriting(target.id) {
+            throw SwitcherError(L("'\(target.name)' is being updated by the switcher. Try again in a moment.", "'\(target.name)' switcher tarafından güncelleniyor. Birazdan tekrar deneyin."))
         }
         try store.delete(target)
         launchers.remove(label: target.name)

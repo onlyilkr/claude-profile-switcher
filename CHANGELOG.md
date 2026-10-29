@@ -13,8 +13,8 @@ hand-edited or unexpected files.
 
 - The app and the command line no longer both start one account in the moment before its window
   appears; launch decisions are shared between them.
-- An account the switcher is copying chats into cannot be opened until the copy finishes; it says it
-  is being updated.
+- An account the switcher is copying chats into cannot be opened or deleted until the copy finishes; it
+  says it is being updated. Chat links and pin sync leave such an account alone too.
 - Settings that cannot be saved now say so instead of failing silently, and two writers no longer lose
   each other's labels or options.
 - When several accounts wait for a browser sign-in at once, each sign-in goes to the right one
