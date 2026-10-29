@@ -102,6 +102,11 @@ struct AccountRowView: View {
     private var isRenaming: Bool { state.renamingID == row.id }
     private var isHighlighted: Bool { state.highlighted == row.id && !isRenaming }
 
+    private var openLine: String {
+        row.isOpen ? L("Bring '\(row.name)' forward", "'\(row.name)' hesabını öne getir")
+                   : L("Open '\(row.name)'", "'\(row.name)' hesabını aç")
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             Avatar(row: row, icon: state.claudeIcon)
@@ -134,22 +139,20 @@ struct AccountRowView: View {
                 // never shifts.
                 ZStack(alignment: .trailing) {
                     UsageMeter(row: row).opacity(isHighlighted ? 0 : 1)
-                    RowMenu(row: row, state: state).opacity(isHighlighted ? 1 : 0)
+                    RowMenu(row: row, state: state).opacity(isHighlighted ? 1 : 0).allowsHitTesting(isHighlighted)
                 }
             }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(Highlight(on: isHighlighted))
-        // The meter gives way to the ⋯ button under the pointer, so its detail (the weekly
-        // limit, how old the number is) is the whole row's tooltip.
-        .help(isRenaming ? "" : row.usageDetail() ?? "")
         .contentShape(Rectangle())
         .onHover { if $0 { state.highlighted = row.id } }
         .onTapGesture { if !isRenaming { state.actions.open(row.id) } }
         .contextMenu { RowMenuItems(row: row, state: state) }
-        .help(row.isOpen ? L("Bring '\(row.name)' forward", "'\(row.name)' hesabını öne getir")
-                         : L("Open '\(row.name)'", "'\(row.name)' hesabını aç"))
+        // One tooltip per row (a second .help on the chain would replace this one): what a
+        // click does, then the usage detail the meter gives way to under the pointer.
+        .help(isRenaming ? "" : [openLine, row.usageDetail()].compactMap { $0 }.joined(separator: "\n"))
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel("\(row.name), \(row.subtitle())")
