@@ -188,11 +188,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         a.decideRouting = { [weak self] yes in
             guard let sw = self?.switcher else { return }
-            if yes { sw.enableRouting() } else { sw.settings.set("SignInRouting", false) }
+            if yes { sw.enableRouting() } else { self?.save("SignInRouting", false) }
             self?.refresh()
         }
         a.setOtherLinks = { [weak self] id in
-            self?.switcher?.settings.set("OpenLinksIn", id == Profile.defaultID ? nil : id)
+            self?.save("OpenLinksIn", id == Profile.defaultID ? nil : id)
             self?.refresh()
         }
         a.setLogin = { [weak self] on in
@@ -207,7 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         a.setLinkChats = { [weak self] on in self?.setLinkChats(on) }
         a.linkAll = { [weak self] in self?.panel.close(); self?.linkAll() }
         a.setSyncPins = { [weak self] on in
-            self?.switcher?.settings.set("SyncPins", on)
+            self?.save("SyncPins", on)
             self?.refresh()
         }
         a.quit = { NSApp.terminate(nil) }
@@ -318,7 +318,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         brokenBefore = broken
         guard confirmed else { return }
         brokenBefore = []
-        sw.settings.set("LinkWorktreeChats", false)
+        save("LinkWorktreeChats", false)
         refresh()
         let v = sw.claude.version
         report(L("Claude moved a linked chat again (Claude \(v)); linking is off.", "Claude bağlı bir sohbeti yine taşıdı (Claude \(v)); bağlama kapatıldı."))
@@ -356,16 +356,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Settings writes can fail (invalid file, read-only folder); say so instead of pretending.
+    private func save(_ key: String, _ value: Any?) {
+        do { try switcher?.settings.set(key, value) } catch {
+            state.errorMessage = L("Could not save settings: \(error.localizedDescription)", "Ayarlar kaydedilemedi: \(error.localizedDescription)")
+        }
+    }
+
     private func setLinkChats(_ on: Bool) {
         guard let sw = switcher else { return }
         brokenBefore = []
         if on {
-            sw.settings.set("LinkWorktreeChats", true)
+            save("LinkWorktreeChats", true)
             refresh()
             scanSharedChats()
             return
         }
-        sw.settings.set("LinkWorktreeChats", false)
+        save("LinkWorktreeChats", false)
         refresh()
         warnedOpenTwice = []
         guard !ledger(sw).linkedSessionIDs().isEmpty else { return }

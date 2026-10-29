@@ -28,13 +28,15 @@ public final class Settings {
     public subscript(key: String) -> Any? { all()[key] }
 
     /// nil removes the key.
-    public func set(_ key: String, _ value: Any?) {
-        if problem != nil { return }
-        var bag = all()
-        if let value { bag[key] = value } else { bag.removeValue(forKey: key) }
-        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        if let data = try? JSONSerialization.data(withJSONObject: bag, options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: file, options: .atomic)
+    /// Locked against the other writer (app or command line) and re-read inside the lock, so no key is lost.
+    public func set(_ key: String, _ value: Any?) throws {
+        try FileLock.exclusively(URL(fileURLWithPath: file.path + ".lock")) {
+            if let problem { throw SwitcherError(problem) }
+            var bag = all()
+            if let value { bag[key] = value } else { bag.removeValue(forKey: key) }
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let data = try JSONSerialization.data(withJSONObject: bag, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: file, options: .atomic)
         }
     }
 
@@ -46,10 +48,10 @@ public final class Settings {
         ((self["Labels"] as? [String: Any]) ?? [:]).compactMapValues { $0 as? String }
     }
 
-    public func setLabel(_ id: String, _ label: String?) {
+    public func setLabel(_ id: String, _ label: String?) throws {
         var map = labels
         if let label, !label.isEmpty, label != id { map[id] = label } else { map.removeValue(forKey: id) }
-        set("Labels", map.isEmpty ? nil : map)
+        try set("Labels", map.isEmpty ? nil : map)
     }
 
     public var colors: [String: Int] {
@@ -57,10 +59,10 @@ public final class Settings {
         return raw.compactMapValues { ($0 as? NSNumber)?.intValue }
     }
 
-    public func forgetColor(_ id: String) {
+    public func forgetColor(_ id: String) throws {
         var map = colors
         map.removeValue(forKey: id)
-        set("Colors", map.isEmpty ? nil : map)
+        try set("Colors", map.isEmpty ? nil : map)
     }
 
     // MARK: Options

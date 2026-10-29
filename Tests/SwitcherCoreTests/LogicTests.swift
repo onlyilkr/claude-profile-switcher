@@ -126,8 +126,8 @@ final class SettingsTests: XCTestCase {
 
     func testProfileEnvAndArgs() throws {
         let s = Settings(file: try tempDir().appendingPathComponent("settings.json"))
-        s.set("ProfileEnv", ["Work": ["MY_VAR": "v", "1BAD": "x", "BAD-NAME": "y", "N": 3]])
-        s.set("ProfileArgs", ["Work": "--a --b", "Home": ["--lang", "fr FR"]])
+        try s.set("ProfileEnv", ["Work": ["MY_VAR": "v", "1BAD": "x", "BAD-NAME": "y", "N": 3]])
+        try s.set("ProfileArgs", ["Work": "--a --b", "Home": ["--lang", "fr FR"]])
         XCTAssertEqual(s.profileEnv("Work"), ["MY_VAR": "v", "N": "3"])
         XCTAssertEqual(s.profileEnv("Other"), [:])
         XCTAssertEqual(s.profileArgs("Work"), ["--a", "--b"])
@@ -250,7 +250,7 @@ final class ReviewFixTests: XCTestCase {
         try broken.write(to: file)
         let settings = Settings(file: file)
         XCTAssertNotNil(settings.problem)
-        settings.set("Colors", ["Work": 1])
+        XCTAssertThrowsError(try settings.set("Colors", ["Work": 1]))
         XCTAssertEqual(try Data(contentsOf: file), broken, "a hand edit with a typo is never thrown away")
     }
 

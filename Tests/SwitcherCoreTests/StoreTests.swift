@@ -71,6 +71,57 @@ final class ProfileStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: work.path.path))
         XCTAssertNil(store.store_label("Work"))
     }
+
+    func testDeleteRefusesWhileSettingsAreInvalid() throws {
+        let work = try store.create(name: "Work")
+        try FileManager.default.createDirectory(at: store.paths.settingsFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "{".write(to: store.paths.settingsFile, atomically: true, encoding: .utf8)
+        XCTAssertThrowsError(try store.delete(work))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: work.path.path))
+    }
+}
+
+final class SettingsWriteTests: XCTestCase {
+    var folder: URL!
+    var settingsFile: URL!
+    var settings: Settings!
+
+    override func setUpWithError() throws {
+        Lang.turkish = false
+        folder = try tempDir()
+        settingsFile = folder.appendingPathComponent("settings.json")
+        settings = Settings(file: settingsFile)
+    }
+
+    override func tearDown() {
+        chmod(folder.path, 0o700)
+    }
+
+    func testSetThrowsAndLeavesAnInvalidFileAlone() throws {
+        try "{".write(to: settingsFile, atomically: true, encoding: .utf8)
+        XCTAssertThrowsError(try settings.set("A", 1))
+        XCTAssertEqual(try String(contentsOf: settingsFile), "{")
+    }
+
+    func testSetThrowsWhenTheFolderIsNotWritable() throws {
+        try settings.set("A", 1)
+        chmod(folder.path, 0o500)
+        defer { chmod(folder.path, 0o700) }
+        XCTAssertThrowsError(try settings.set("B", 2))
+    }
+
+    func testConcurrentSettersKeepEveryKey() throws {
+        // Two instances on one file, like the app and a command line run.
+        let a = Settings(file: settingsFile), b = Settings(file: settingsFile)
+        let group = DispatchGroup()
+        for (settings, prefix) in [(a, "a"), (b, "b")] {
+            DispatchQueue.global().async(group: group) {
+                for i in 0..<50 { try? settings.set("\(prefix)\(i)", i) }
+            }
+        }
+        group.wait()
+        XCTAssertEqual(Settings(file: settingsFile).all().count, 100)
+    }
 }
 
 private extension ProfileStore {

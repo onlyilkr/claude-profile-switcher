@@ -321,9 +321,9 @@ final class PinSyncTests: XCTestCase {
     func testSyncPinsSettingDefaultsOn() throws {
         let settings = Settings(file: home.appendingPathComponent("settings.json"))
         XCTAssertTrue(settings.syncPins)
-        settings.set("SyncPins", false)
+        try settings.set("SyncPins", false)
         XCTAssertFalse(settings.syncPins)
-        settings.set("SyncPins", true)
+        try settings.set("SyncPins", true)
         XCTAssertTrue(settings.syncPins)
     }
 }

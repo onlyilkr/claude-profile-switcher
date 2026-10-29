@@ -164,7 +164,7 @@ public final class ProfileStore {
         if let problem = validateName(newName, exceptID: profile.id) { throw SwitcherError(problem) }
         // The label lives in settings.json; when that cannot be saved, nothing may pretend it was.
         if let problem = settings.problem { throw SwitcherError(problem) }
-        settings.setLabel(profile.id, newName)
+        try settings.setLabel(profile.id, newName)
         return Profile(id: profile.id, name: newName, path: profile.path, pid: profile.pid, lastUsed: profile.lastUsed)
     }
 
@@ -182,10 +182,17 @@ public final class ProfileStore {
         if isRunning(profile) != nil {
             throw SwitcherError(L("Quit '\(profile.name)' before deleting it.", "Silmeden önce '\(profile.name)' uygulamasından çıkın."))
         }
+        // Checked before the folder goes to the Trash: afterwards the label could not be removed.
+        if let problem = settings.problem { throw SwitcherError(problem) }
         if FileManager.default.fileExists(atPath: profile.path.path) {
             try remove(profile.path)
         }
-        settings.setLabel(profile.id, nil)
-        settings.forgetColor(profile.id)
+        do {
+            try settings.setLabel(profile.id, nil)
+            try settings.forgetColor(profile.id)
+        } catch {
+            throw SwitcherError(L("'\(profile.name)' was moved to the Trash, but its label could not be removed: \(error.localizedDescription)",
+                                  "'\(profile.name)' Çöp Kutusu'na taşındı, ancak etiketi kaldırılamadı: \(error.localizedDescription)"))
+        }
     }
 }

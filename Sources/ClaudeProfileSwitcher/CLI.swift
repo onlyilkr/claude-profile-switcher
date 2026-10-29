@@ -93,7 +93,9 @@ enum CLI {
         }
         let sw: Switcher
         do { sw = try Switcher(paths: paths, ownBundleID: appBundle.bundleIdentifier, claudePath: options["--claude-path"]) } catch { return fail(error.localizedDescription) }
-        if options["--claude-path"] != nil { sw.settings.set("ClaudePath", sw.claude.url.path) }
+        if options["--claude-path"] != nil {
+            do { try sw.settings.set("ClaudePath", sw.claude.url.path) } catch { return fail(error.localizedDescription) }
+        }
 
         do {
             if switches.contains("--list") { list(sw); return 0 }
@@ -110,12 +112,12 @@ enum CLI {
             }
             if let name = options["--open-links-in"] {
                 if name.caseInsensitiveCompare(Profile.defaultID) == .orderedSame {
-                    sw.settings.set("OpenLinksIn", nil)
+                    try sw.settings.set("OpenLinksIn", nil)
                     print("claude:// links that are not sign-ins open in Default again.")
                     return 0
                 }
                 let target = try resolve(sw, name)
-                sw.settings.set("OpenLinksIn", target.id)
+                try sw.settings.set("OpenLinksIn", target.id)
                 print("claude:// links that are not sign-ins now open in '\(target.name)'.")
                 if !sw.routingOn { print("That takes effect once sign-in routing is on (--route-sign-ins).") }
                 return 0

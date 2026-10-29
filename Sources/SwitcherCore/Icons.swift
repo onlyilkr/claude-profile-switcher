@@ -22,7 +22,8 @@ public enum Badge {
         var pick = 0
         for i in 1..<use.count where use[i] < use[pick] { pick = i }
         assigned[id] = pick
-        settings.set("Colors", assigned)
+        // A colour that could not be saved is picked again next time; the badge still draws.
+        try? settings.set("Colors", assigned)
         return pick
     }
 
