@@ -129,6 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let linking = sw.settings["LinkWorktreeChats"] as? Bool == true
         set(\.linkChats, linking)
         set(\.syncPins, sw.settings.syncPins)
+        set(\.pinSyncProblem, sw.pinSyncProblem)
         updateOpenTwiceTimer()
         if sharedChatsModel.linkEnabled != linking { sharedChatsModel.linkEnabled = linking }
         set(\.showRoutingBanner, sw.settings.signInRouting == nil && profiles.count > 1)
@@ -673,7 +674,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         // Starting accounts count as open, as they do for the linker. The target is claimed for
                         // writing by this very transfer, so it does not count as open to itself, unless a process is on it.
                         let open = sw.openFolders().filter { !(ProfileStore.sameItem($0, target.path) && sw.store.isRunning(target) == nil) }
-                        o.pinned = try sw.transfer.carryPins(of: o.copiedSessions, from: source, to: target, openFolders: open)
+                        o.pinned = try sw.transfer.carryPins(of: o.copiedSessions, from: source, to: target, openFolders: open,
+                                                    backups: sw.paths.pinStoreBackups)
                     } catch {
                         o.skipped.append(L("Pins were not carried over: \(error.localizedDescription)", "Pinler taşınamadı: \(error.localizedDescription)"))
                     }

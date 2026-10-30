@@ -114,7 +114,7 @@ public enum PinSync {
         if failed > 0 { logError("Pin sync for '\(name)': \(failed) record mirror(s) not updated") }
     }
 
-    private static func noPinRecord(_ profile: Profile) -> SwitcherError {
+    static func noPinRecord(_ profile: Profile) -> SwitcherError {
         SwitcherError(L("Claude has not saved pins in '\(profile.name)' yet. Pin one chat there once, then pin sync can follow.",
                         "Claude '\(profile.name)' hesabında henüz pin kaydetmedi. Orada bir sohbeti bir kez pinleyin, sonra pin eşitleme çalışır."),
                       logReason: "no pin record yet")

@@ -435,6 +435,12 @@ struct SettingsSection: View {
                           detail: L("When an account opens, pins of the chats it shares with the account you used last follow that account, in the same order.",
                                     "Bir hesap açılırken, en son kullandığınız hesapla ortak sohbetlerin pinleri o hesaptaki sırayla gelir."),
                           isOn: Binding(get: { state.syncPins }, set: { state.actions.setSyncPins($0) }))
+                if state.syncPins, let problem = state.pinSyncProblem {
+                    Text(problem)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             ToggleRow(title: L("Open at login", "Oturum açılışında başlat"), detail: nil,
                       isOn: Binding(get: { state.loginItem }, set: { state.actions.setLogin($0) }))

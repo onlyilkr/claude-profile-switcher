@@ -154,21 +154,31 @@ public struct ChatTransfer {
         return (node as? [String]) ?? []
     }
 
-    /// Pins in `target` the sessions of `sessions` that are pinned in `source`, in the
-    /// source's order, after the target's own pins. Returns how many were added. The file
-    /// also holds MCP servers and settings, so a copy of it is kept next to it first and
-    /// every other key is left as it was. Only while the target is not running: Claude
-    /// writes this file back when it quits.
+    /// Pins the copied `sessions` that are pinned in `source` at the top of `target`'s sidebar, in
+    /// the source's sidebar order; the target's other pins follow. Written to Claude's own pin store
+    /// (closed account, backed up, verified), then to the mirrors: the config's pin list and
+    /// isStarred on the records. Mirror failures are ignored, as Claude rewrites them from its store
+    /// when it starts. Returns how many were carried; a source without a readable pin record carries
+    /// nothing. Throws when the target is open or the store refuses; the copied chats stay.
     @discardableResult
-    public func carryPins(of sessions: [CodeSession], from source: Profile, to target: Profile, openFolders: [URL] = []) throws -> Int {
+    public func carryPins(of sessions: [CodeSession], from source: Profile, to target: Profile, openFolders: [URL] = [], backups: URL) throws -> Int {
         let wanted = Set(sessions.map { "local_\($0.sessionID)" })
-        let existing = pins(of: target)
-        let add = pins(of: source).filter { wanted.contains($0) && !existing.contains($0) }
-        guard !add.isEmpty else { return 0 }
+        // The source may be open, so its files can end in a half-written entry.
+        guard let sourcePins = (try? ClaudePinStore.read(source, tolerateTornTail: true)) ?? nil else { return 0 }
+        var seen = Set<String>()
+        let carried = sourcePins.sidebar.filter { wanted.contains($0) && seen.insert($0).inserted }
+        guard !carried.isEmpty else { return 0 }
 
-        try writePins(existing + add, to: target, openFolders: openFolders,
-                      afterwards: L(" The chats were copied.", " Sohbetler kopyalandı."))
-        return add.count
+        if openFolders.contains(where: { ProfileStore.sameItem($0, target.path) }) {
+            throw SwitcherError(L("The profile is open; pins were not carried over.", "Profil açık; pinler taşınmadı."), logReason: "profile is open")
+        }
+        guard let targetPins = try ClaudePinStore.read(target, tolerateTornTail: false) else { throw PinSync.noPinRecord(target) }
+        let list = carried + targetPins.sidebar.filter { !seen.contains($0) }
+        _ = try ClaudePinStore.write(list, to: target, backups: backups)
+
+        if pins(of: target) != list { try? writePins(list, to: target, openFolders: openFolders) }
+        _ = setStarred(true, ids: carried, in: target)
+        return carried.count
     }
 
     /// Replaces the pin list in `target`'s claude_desktop_config.json, keeping every other key.

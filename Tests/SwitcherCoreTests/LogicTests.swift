@@ -279,10 +279,8 @@ final class ReviewFixTests: XCTestCase {
         try FileManager.default.createDirectory(at: source.path, withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: ["preferences": ["epitaxyPrefs": ["starred-local-code-sessions": ["local_a"]]]])
             .write(to: ChatTransfer.configFile(source))
-        let session = CodeSession(file: home.appendingPathComponent("local_a.json"), sessionID: "a", cliSessionID: "c",
-                                  priorCLISessionIDs: [], title: "t", folder: "", updated: Date(), hasTranscript: true)
         let transfer = ChatTransfer(transcriptsRoot: home)
-        XCTAssertThrowsError(try transfer.carryPins(of: [session], from: source, to: target))
+        XCTAssertThrowsError(try transfer.writePins(["local_a"], to: target))
         XCTAssertEqual(try Data(contentsOf: ChatTransfer.configFile(target)), broken, "the user's file is left exactly as it was")
     }
 
@@ -298,8 +296,8 @@ final class ReviewFixTests: XCTestCase {
             CodeSession(file: home.appendingPathComponent("local_\(id).json"), sessionID: id, cliSessionID: "c\(id)",
                         priorCLISessionIDs: [], title: id, folder: "", updated: Date(), hasTranscript: true)
         }
-        XCTAssertEqual(try ChatTransfer(transcriptsRoot: home).carryPins(of: [session("a")], from: source, to: target), 1)
-        XCTAssertEqual(try ChatTransfer(transcriptsRoot: home).carryPins(of: [session("b")], from: source, to: target), 1)
+        try ChatTransfer(transcriptsRoot: home).writePins(["local_a"], to: target)
+        try ChatTransfer(transcriptsRoot: home).writePins(["local_a", "local_b"], to: target)
         let backups = try FileManager.default.contentsOfDirectory(atPath: target.path.path).filter { $0.contains("switcher-backup") }
         XCTAssertEqual(backups.count, 2, "each change keeps its own backup")
     }
@@ -364,9 +362,7 @@ final class LaunchArgumentTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: ChatTransfer.configFile(target), withDestinationURL: shared)
         try JSONSerialization.data(withJSONObject: ["preferences": ["epitaxyPrefs": ["starred-local-code-sessions": ["local_a"]]]])
             .write(to: ChatTransfer.configFile(source))
-        let session = CodeSession(file: home.appendingPathComponent("local_a.json"), sessionID: "a", cliSessionID: "c",
-                                  priorCLISessionIDs: [], title: "a", folder: "", updated: Date(), hasTranscript: true)
-        XCTAssertEqual(try ChatTransfer(transcriptsRoot: home).carryPins(of: [session], from: source, to: target), 1)
+        try ChatTransfer(transcriptsRoot: home).writePins(["local_a"], to: target)
         let link = try FileManager.default.destinationOfSymbolicLink(atPath: ChatTransfer.configFile(target).path)
         XCTAssertEqual(URL(fileURLWithPath: link).resolvingSymlinksInPath(), shared.resolvingSymlinksInPath(), "the link is kept")
         XCTAssertEqual(ChatTransfer(transcriptsRoot: home).pins(of: target), ["local_a"])
@@ -404,9 +400,7 @@ final class AuditFixTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: ChatTransfer.configFile(target), withDestinationURL: shared)
         try JSONSerialization.data(withJSONObject: ["preferences": ["epitaxyPrefs": ["starred-local-code-sessions": ["local_a"]]]])
             .write(to: ChatTransfer.configFile(source))
-        let session = CodeSession(file: home.appendingPathComponent("local_a.json"), sessionID: "a", cliSessionID: "c",
-                                  priorCLISessionIDs: [], title: "a", folder: "", updated: Date(), hasTranscript: true)
-        XCTAssertThrowsError(try ChatTransfer(transcriptsRoot: home).carryPins(of: [session], from: source, to: target, openFolders: [other]))
+        XCTAssertThrowsError(try ChatTransfer(transcriptsRoot: home).writePins(["local_a"], to: target, openFolders: [other]))
         XCTAssertEqual(try Data(contentsOf: shared), original, "an open profile's config is left alone")
     }
 
