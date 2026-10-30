@@ -47,6 +47,29 @@ final class ProfileClaimsTests: XCTestCase {
         XCTAssertEqual(try claims.claimLaunch("Work") { nil }, .go)
     }
 
+    func testASlowPinSyncKeepsTheClaimFreshThenTheWindowRestarts() throws {
+        let claims = make(pid: 100)
+        XCTAssertEqual(try claims.claimLaunch("Work") { nil }, .go)
+        claims.setSyncing("Work", true)
+        clock.addTimeInterval(25)
+        XCTAssertEqual(try make(pid: 200).claimLaunch("Work") { nil }, .starting, "still syncing: a second launch must not get through")
+        XCTAssertTrue(claims.startedRecently("Work"))
+        claims.setSyncing("Work", false)
+        clock.addTimeInterval(19)
+        XCTAssertEqual(try make(pid: 200).claimLaunch("Work") { nil }, .starting, "the 20 s window runs from the end of the sync")
+        clock.addTimeInterval(2)
+        XCTAssertEqual(try make(pid: 200).claimLaunch("Work") { nil }, .go)
+    }
+
+    func testASyncingClaimOfADeadProcessExpires() throws {
+        let claims = make(pid: 100)
+        _ = try claims.claimLaunch("Work") { nil }
+        claims.setSyncing("Work", true)
+        clock.addTimeInterval(25)
+        alive = false
+        XCTAssertEqual(try make(pid: 200).claimLaunch("Work") { nil }, .go)
+    }
+
     func testTwoInstancesOnOneFileShareClaims() throws {
         let app = make(pid: 100), cli = make(pid: 200)
         XCTAssertEqual(try app.claimLaunch("Work") { nil }, .go)

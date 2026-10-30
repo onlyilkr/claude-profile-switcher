@@ -295,13 +295,13 @@ final class PinSyncTests: XCTestCase {
 
     // MARK: Launch path
 
-    final class Lines { var info: [String] = []; var errors: [String] = []; var problems: [String?] = [] }
+    final class Lines { var info: [String] = []; var errors: [String] = []; var problems: [String?] = []; var problemIDs: [String] = []; var stop: SwitcherError? }
 
     func runLaunchSync(_ t: Profile, _ s: Profile, enabled: Bool = true, open: [URL] = [], lines: Lines = Lines()) -> Lines {
         let now = Date()
-        Switcher.syncPinsBeforeLaunch(target: t, among: [s, t], openFolders: open, enabled: enabled, transfer: transfer,
+        lines.stop = Switcher.syncPinsBeforeLaunch(target: t, among: [s, t], openFolders: open, enabled: enabled, transfer: transfer,
                                       backups: backupsDir, lastUsed: { $0.id == "S" ? now : now.addingTimeInterval(-3600) },
-                                      problem: { lines.problems.append($0) },
+                                      problem: { lines.problemIDs.append($0); lines.problems.append($1) },
                                       log: { lines.info.append($0) }, logError: { lines.errors.append($0) })
         return lines
     }
@@ -378,6 +378,74 @@ final class PinSyncTests: XCTestCase {
         XCTAssertEqual(lines.problems.count, 1)
         XCTAssertNotNil(lines.problems[0])
         XCTAssertEqual(lines.errors, ["Pin sync for 'T' failed: no pin record yet"])
+    }
+
+    func testAFailedRestoreStopsTheLaunchAndNamesTheBackup() throws {
+        defer { ClaudePinStore.beforeIndexedDBWrite = nil }
+        let s = try profile("S", chats: ["local_a", "local_b"], pins: ["local_b", "local_a"])
+        let t = try profile("T", chats: ["local_a", "local_b"], pins: ["local_a"])
+        ClaudePinStore.beforeIndexedDBWrite = {
+            // Breaks the IndexedDB append and the restore: the backup folder disappears.
+            let log = ClaudeStoreFixture.idbFolder(t).appendingPathComponent("000003.log")
+            let h = try FileHandle(forWritingTo: log); defer { try? h.close() }
+            try h.seekToEnd(); try h.write(contentsOf: Data([1, 2, 3]))
+            try FileManager.default.removeItem(at: self.backupsDir)
+            try FileManager.default.createDirectory(at: self.backupsDir, withIntermediateDirectories: true)
+        }
+        let lines = runLaunchSync(t, s)
+        let stop = try XCTUnwrap(lines.stop, "the launch must not go on")
+        XCTAssertEqual(stop.logReason, "pin store restore failed")
+        XCTAssertTrue(stop.message.contains(backupsDir.path), "the message names where the backup is")
+        XCTAssertEqual(lines.errors, ["Pin sync for 'T' failed: pin store restore failed"])
+    }
+
+    func testEveryOtherFailureLetsTheLaunchGoOn() throws {
+        let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
+        let t = try profile("T", chats: ["local_a"], pins: [], lsVersion: "2")
+        XCTAssertNil(runLaunchSync(t, s).stop)
+        let u = try profile("U", chats: ["local_a"], pins: [], hasPinRecord: false)
+        XCTAssertNil(runLaunchSync(u, s).stop)
+    }
+
+    func testEachPersistentLevelDBRefusalMapsToTheNote() throws {
+        let t = try profile("T", chats: [], pins: [])
+        for reason in ["leveldb read failed", "leveldb log not clean", "leveldb lock missing", "leveldb current log missing"] {
+            XCTAssertEqual(Switcher.pinSyncNote(for: SwitcherError("x", logReason: reason), target: t),
+                           "Claude's pin storage in 'T' could not be read safely, so pins were not synced there.", reason)
+        }
+        for reason in ["store is locked", "leveldb several live logs", "pin store write failed", "profile is open"] {
+            XCTAssertNil(Switcher.pinSyncNote(for: SwitcherError("x", logReason: reason), target: t), reason)
+        }
+    }
+
+    func testAMissingLockSetsTheNoteInTheLaunchPath() throws {
+        let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
+        let t = try profile("T", chats: ["local_a"], pins: [])
+        try FileManager.default.removeItem(at: ClaudeStoreFixture.lsFolder(t).appendingPathComponent("LOCK"))
+        let lines = runLaunchSync(t, s)
+        XCTAssertEqual(lines.problemIDs, ["T"])
+        XCTAssertEqual(lines.problems, ["Claude's pin storage in 'T' could not be read safely, so pins were not synced there."])
+        XCTAssertEqual(lines.errors, ["Pin sync for 'T' failed: leveldb lock missing"])
+        XCTAssertNil(lines.stop)
+    }
+
+    func testNotesArePerProfile() {
+        let notes = PinSyncNotes()
+        notes.set("A", "note A")
+        notes.set("B", "note B")
+        notes.set("B", nil)   // a success on B
+        XCTAssertEqual(notes.all, ["A": "note A"], "B's success does not clear A's note")
+        notes.set("A", nil)
+        XCTAssertTrue(notes.all.isEmpty)
+    }
+
+    func testTheLaunchPathReportsTheTargetsOwnId() throws {
+        let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
+        let t = try profile("T", chats: ["local_a"], pins: ["local_a"])
+        let lines = runLaunchSync(t, s)   // nothing to change: T was read, its note is cleared
+        XCTAssertEqual(lines.problemIDs, ["T"])
+        XCTAssertEqual(lines.problems.count, 1)
+        XCTAssertNil(lines.problems[0])
     }
 
     func testOtherFailuresOnlyLog() throws {

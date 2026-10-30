@@ -189,6 +189,42 @@ final class ClaudePinStoreTests: XCTestCase {
         }
     }
 
+    func testBackupLeavesLockOutAndRestoreStillWorks() throws {
+        let p = try make()
+        let idbBefore = try ClaudeStoreFixture.snapshot(ClaudeStoreFixture.idbFolder(p))
+        ClaudePinStore.beforeIndexedDBWrite = {
+            let log = ClaudeStoreFixture.idbFolder(p).appendingPathComponent("000003.log")
+            let h = try FileHandle(forWritingTo: log); defer { try? h.close() }
+            try h.seekToEnd(); try h.write(contentsOf: Data([1, 2, 3]))
+            // The backup exists by now and holds no LOCK.
+            let stamp = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: self.backups.path).first)
+            let dir = self.backups.appendingPathComponent(stamp).appendingPathComponent("p1")
+            for rel in ["IndexedDB/https_claude.ai_0.indexeddb.leveldb", "Local Storage/leveldb"] {
+                let names = try FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent(rel).path)
+                XCTAssertFalse(names.contains("LOCK"))
+                XCTAssertTrue(names.contains("000003.log"))
+            }
+        }
+        expectRefusal("pin store write failed") { try ClaudePinStore.write(["local_a"], to: p, backups: self.backups, now: self.now) }
+        XCTAssertEqual(try ClaudeStoreFixture.snapshot(ClaudeStoreFixture.idbFolder(p)), idbBefore, "restored, with the live LOCK still in place")
+    }
+
+    func testBackupFoldersAreOwnerOnly() throws {
+        let p = try make()
+        let fresh = root.appendingPathComponent("fresh-backups/pinstore")
+        XCTAssertTrue(try ClaudePinStore.write(["local_z"], to: p, backups: fresh, now: now))
+        func mode(_ url: URL) throws -> Int { Int(try XCTUnwrap(FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber).intValue) }
+        XCTAssertEqual(try mode(fresh), 0o700)
+        let stamp = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: fresh.path).first)
+        var dir = fresh.appendingPathComponent(stamp)
+        XCTAssertEqual(try mode(dir), 0o700)
+        dir.appendPathComponent("p1")
+        XCTAssertEqual(try mode(dir), 0o700)
+        for rel in ["IndexedDB", "IndexedDB/https_claude.ai_0.indexeddb.leveldb", "Local Storage", "Local Storage/leveldb"] {
+            XCTAssertEqual(try mode(dir.appendingPathComponent(rel)), 0o700, rel)
+        }
+    }
+
     func testBackupHoldsBothDatabasesAndConfig() throws {
         let p = try make()
         XCTAssertTrue(try ClaudePinStore.write(["local_z"], to: p, backups: backups, now: now))
@@ -245,7 +281,8 @@ final class ClaudePinStoreTests: XCTestCase {
             let d = backups.appendingPathComponent("2099010\(i)-000000-000/p1")
             try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
         }
-        let before = try ClaudeStoreFixture.snapshot(ClaudeStoreFixture.lsFolder(p))
+        var before = try ClaudeStoreFixture.snapshot(ClaudeStoreFixture.lsFolder(p))
+        before["/LOCK"] = nil   // backups never hold LOCK
         XCTAssertTrue(try ClaudePinStore.write(["local_z"], to: p, backups: backups, now: now))
         let mine = backups.appendingPathComponent("20231114-221320-000/p1")
         XCTAssertEqual(try ClaudeStoreFixture.snapshot(mine.appendingPathComponent("Local Storage/leveldb")), before)

@@ -29,6 +29,20 @@ final class LevelDBWriterTests: XCTestCase {
         XCTAssertEqual(try reader.newest(k), LevelDBEntry(key: k, sequence: seq, isPut: true, value: v))
     }
 
+    func testRefusesSeveralLiveLogs() throws {
+        try makeDatabase()
+        try fx.writeLog(number: 9, batches: [.init(sequence: 600, ops: [(k, Data("newer".utf8))])])
+        let before = try Data(contentsOf: logURL)
+        XCTAssertThrowsError(try writer.append([(k, v)])) { XCTAssertEqual(($0 as? SwitcherError)?.logReason, "leveldb several live logs") }
+        XCTAssertEqual(try Data(contentsOf: logURL), before)
+    }
+
+    func testAnOlderLogDoesNotCountAsLive() throws {
+        try makeDatabase()
+        try fx.writeLog(number: 7, batches: [.init(sequence: 400, ops: [(k, Data("older".utf8))])])
+        XCTAssertNoThrow(try writer.append([(k, v)]))
+    }
+
     func testSequenceIsAboveEverything() throws {
         try makeDatabase(seq: 500)
         XCTAssertEqual(try writer.append([(k, v)]), 501)

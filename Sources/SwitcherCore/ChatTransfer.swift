@@ -212,13 +212,22 @@ public struct ChatTransfer {
     /// the source's sidebar order; the target's other pins follow. Written to Claude's own pin store
     /// (closed account, backed up, verified), then to the mirrors: the config's pin list and
     /// isStarred on the records. Mirror failures are ignored, as Claude rewrites them from its store
-    /// when it starts. Returns how many were carried; a source without a readable pin record carries
-    /// nothing. Throws when the target is open or the store refuses; the copied chats stay.
+    /// when it starts. Returns how many were carried; a source without a pin record carries nothing, and one
+    /// that cannot be read carries nothing and is logged through `logError` (fixed reason). Throws when the target is open or the store refuses; the copied chats stay.
     @discardableResult
-    public func carryPins(of sessions: [CodeSession], from source: Profile, to target: Profile, openFolders: [URL] = [], backups: URL) throws -> Int {
+    public func carryPins(of sessions: [CodeSession], from source: Profile, to target: Profile, openFolders: [URL] = [], backups: URL,
+                          logError: (String) -> Void) throws -> Int {
         let wanted = Set(sessions.map { "local_\($0.sessionID)" })
+        guard !wanted.isEmpty else { return 0 }
         // The source may be open, so its files can end in a half-written entry.
-        guard let sourcePins = (try? ClaudePinStore.read(source, tolerateTornTail: true)) ?? nil else { return 0 }
+        let sourcePins: ClaudePins
+        do {
+            guard let pins = try ClaudePinStore.read(source, tolerateTornTail: true) else { return 0 }
+            sourcePins = pins
+        } catch {
+            logError("Pins for '\(target.name)' not carried: source pins unreadable")
+            return 0
+        }
         var seen = Set<String>()
         let carried = sourcePins.sidebar.filter { wanted.contains($0) && seen.insert($0).inserted }
         guard !carried.isEmpty else { return 0 }

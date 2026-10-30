@@ -335,7 +335,7 @@ final class ChatTransferTests: XCTestCase {
     func testCarriedPinsGoOnTopInSourceOrder() throws {
         let src = try storeProfile("S", pins: ["local_b", "local_a", "local_d"])   // d is not copied
         let dst = try storeProfile("T", pins: ["local_x", "local_a"])
-        let carried = try transfer.carryPins(of: sessionsNamed(["a", "b", "c"]), from: src, to: dst, backups: pinBackups)
+        let carried = try transfer.carryPins(of: sessionsNamed(["a", "b", "c"]), from: src, to: dst, backups: pinBackups, logError: { _ in })
         XCTAssertEqual(carried, 2)
         XCTAssertEqual(try ClaudePinStore.read(dst, tolerateTornTail: false)?.sidebar, ["local_b", "local_a", "local_x"],
                        "carried pins on top in the source's order, the target's others after, no duplicates")
@@ -349,7 +349,7 @@ final class ChatTransferTests: XCTestCase {
         let dst = try storeProfile("T", pins: [])
         let dir = ChatTransfer.sessionRoot(dst).appendingPathComponent("acct/org")
         try write(dir.appendingPathComponent("local_a.json"), ["sessionId": "local_a", "cliSessionId": "ca"])
-        XCTAssertEqual(try transfer.carryPins(of: sessionsNamed(["a"]), from: src, to: dst, backups: pinBackups), 1)
+        XCTAssertEqual(try transfer.carryPins(of: sessionsNamed(["a"]), from: src, to: dst, backups: pinBackups, logError: { _ in }), 1)
         let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: dir.appendingPathComponent("local_a.json"))) as! [String: Any]
         XCTAssertEqual(raw["isStarred"] as? Bool, true)
     }
@@ -358,7 +358,7 @@ final class ChatTransferTests: XCTestCase {
         let src = try storeProfile("S", pins: ["local_a"])
         let noRecord = try storeProfile("T", pins: nil)
         let before = try ClaudeStoreFixture.snapshot(noRecord.path.appendingPathComponent("IndexedDB"))
-        XCTAssertThrowsError(try transfer.carryPins(of: sessionsNamed(["a"]), from: src, to: noRecord, backups: pinBackups)) {
+        XCTAssertThrowsError(try transfer.carryPins(of: sessionsNamed(["a"]), from: src, to: noRecord, backups: pinBackups, logError: { _ in })) {
             XCTAssertEqual(($0 as? SwitcherError)?.logReason, "no pin record yet")
         }
         XCTAssertEqual(try ClaudeStoreFixture.snapshot(noRecord.path.appendingPathComponent("IndexedDB")), before, "nothing was written")
@@ -368,17 +368,22 @@ final class ChatTransferTests: XCTestCase {
     func testCarryPinsRefusesAnOpenTarget() throws {
         let src = try storeProfile("S", pins: ["local_a"])
         let dst = try storeProfile("T", pins: [])
-        XCTAssertThrowsError(try transfer.carryPins(of: sessionsNamed(["a"]), from: src, to: dst, openFolders: [dst.path], backups: pinBackups))
+        XCTAssertThrowsError(try transfer.carryPins(of: sessionsNamed(["a"]), from: src, to: dst, openFolders: [dst.path], backups: pinBackups, logError: { _ in }))
         XCTAssertEqual(try ClaudePinStore.read(dst, tolerateTornTail: false)?.sidebar, [])
     }
 
     func testCarryPinsFromASourceWithoutPinsCarriesNothing() throws {
         let dst = try storeProfile("T", pins: ["local_x"])
         let noRecord = try storeProfile("S", pins: nil)
-        XCTAssertEqual(try transfer.carryPins(of: sessionsNamed(["a"]), from: noRecord, to: dst, backups: pinBackups), 0)
+        XCTAssertEqual(try transfer.carryPins(of: sessionsNamed(["a"]), from: noRecord, to: dst, backups: pinBackups, logError: { _ in }), 0)
         let unreadable = try storeProfile("U", pins: ["local_a"])
         try FileManager.default.removeItem(at: ClaudeStoreFixture.idbFolder(unreadable))
-        XCTAssertEqual(try transfer.carryPins(of: sessionsNamed(["a"]), from: unreadable, to: dst, backups: pinBackups), 0)
+        var logged = [String]()
+        XCTAssertEqual(try transfer.carryPins(of: sessionsNamed(["a"]), from: unreadable, to: dst, backups: pinBackups, logError: { logged.append($0) }), 0)
+        XCTAssertEqual(logged, ["Pins for 'T' not carried: source pins unreadable"], "one fixed line, no ids or paths")
+        logged = []
+        XCTAssertEqual(try transfer.carryPins(of: sessionsNamed(["a"]), from: noRecord, to: dst, backups: pinBackups, logError: { logged.append($0) }), 0)
+        XCTAssertTrue(logged.isEmpty, "a source with no record is silent")
         XCTAssertEqual(try ClaudePinStore.read(dst, tolerateTornTail: false)?.sidebar, ["local_x"])
     }
 
@@ -388,14 +393,14 @@ final class ChatTransferTests: XCTestCase {
             .first { $0.pathExtension == "log" })
         let h = try FileHandle(forWritingTo: log); h.seekToEndOfFile(); h.write(Data([0x01, 0x02, 0x03])); try h.close()
         let dst = try storeProfile("T", pins: [])
-        XCTAssertEqual(try transfer.carryPins(of: sessionsNamed(["a"]), from: src, to: dst, backups: pinBackups), 1)
+        XCTAssertEqual(try transfer.carryPins(of: sessionsNamed(["a"]), from: src, to: dst, backups: pinBackups, logError: { _ in }), 1)
     }
 
     func testCarryPinsMirrorFailureDoesNotFailTheCarry() throws {
         let src = try storeProfile("S", pins: ["local_a"])
         let broken = "{\"mcpServers\": {\"a\": {\"command\": \"x\""   // truncated mid-edit
         let dst = try storeProfile("T", pins: [], config: broken)
-        XCTAssertEqual(try transfer.carryPins(of: sessionsNamed(["a"]), from: src, to: dst, backups: pinBackups), 1)
+        XCTAssertEqual(try transfer.carryPins(of: sessionsNamed(["a"]), from: src, to: dst, backups: pinBackups, logError: { _ in }), 1)
         XCTAssertEqual(try ClaudePinStore.read(dst, tolerateTornTail: false)?.sidebar, ["local_a"])
         XCTAssertEqual(try String(contentsOf: ChatTransfer.configFile(dst)), broken, "the user's file is left exactly as it was")
     }

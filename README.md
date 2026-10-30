@@ -253,7 +253,7 @@ pick the target account.
 | `bridgeSessionIds` | Emptied: these are the old account's cloud session ids |
 | `scheduledTaskId` | Removed: it points at a task of the old account |
 | Everything else | Kept, including fields the switcher does not know |
-| Pin | If the chat is pinned in the source, it is pinned in the target too, on top of the target's own pins and in the source's order; it shows in Claude's sidebar there (see [Pins](#pins) for how and when). With **Sync pins across accounts** on (the default), opening the target afterwards also makes the pins of every chat both accounts share follow the account you used last, usually the source (see [Pins](#pins)). |
+| Pin | When the pin list can be written (see [Pins](#pins)): if the chat is pinned in the source, it is pinned in the target too, on top of the target's own pins and in the source's order; it shows in Claude's sidebar there (see [Pins](#pins) for how and when). With **Sync pins across accounts** on (the default), opening the target afterwards also makes the pins of every chat both accounts share follow the account you used last, usually the source (see [Pins](#pins)). |
 
 Safety rules, the same as [claude-migrate](https://github.com/onlyilkr/claude-migrate):
 
@@ -280,8 +280,8 @@ Safety rules, the same as [claude-migrate](https://github.com/onlyilkr/claude-mi
 - **Missing parent chats.** A sub-session shows under its parent chat only when every chat between them
   exists in the target too. When some are missing there, the window offers **Also copy N parent chat(s)**
   (on by default) and copies them first, farthest parent first. It stops at the first parent the target
-  already has, at one this account does not have, and at one you deleted in the target (never brought
-  back). Parents pinned in the source are pinned in the target like the chats you picked.
+  already has, at one the source account does not have, and at one you deleted in the target (never brought
+  back). A sub-session whose lineage Claude marked as detached is not followed upwards. Parents pinned in the source are pinned in the target like the chats you picked.
 
 The chat stays in the source account too. A chat that does not use a git worktree has one history
 file under `~/.claude/projects`, so both accounts continue the same history: finish in one account
@@ -431,12 +431,11 @@ The switcher writes only while the account is closed, and holds the storage's ow
 write; an account that is open or still starting is left alone. Before it writes, it copies the account's
 two storage folders and `claude_desktop_config.json` to `backups/pinstore/<time>/<account>/` in the
 switcher's folder (the newest 5 per account are kept), and it restores them if the write fails or does
-not read back as written. The chat records it changes are backed up beside them first, as before.
+not read back as written. If that restore itself fails, Claude is not started on the account, and the message names the backup folder. A crash between the two writes (Local Storage, then IndexedDB) leaves the backup intact, and the next sync repairs it. The backup folders are private to you (0700) and hold no copy of the storage's lock file. The chat records it changes are backed up beside them first, as before.
 
 When the storage is not in the format the switcher has seen, nothing is written. The same goes for an
-account where Claude has not saved any pins yet (pin one chat there once). The panel says which of the
-two under the **Sync pins across accounts** switch, and the log gets one line with a fixed reason,
-never chat names or file paths. Opening is never blocked by any of this. It happens only when the
+account where Claude has not saved any pins yet (pin one chat there once). The same goes for storage that cannot be read safely. The panel says which under the **Sync pins across accounts** switch, one line per account, until that account's storage reads fine again (a sync started from the command line is only logged), and the log gets one line with a fixed reason,
+never chat names or file paths. Opening is not blocked by any of this, except when a failed restore leaves the account's data in doubt (above). It happens only when the
 switcher opens an account (the panel, a launcher, or `--launch`); opening Claude.app directly skips it.
 It is on by default; turn it off with **Sync pins across accounts** in the panel (`SyncPins` in
 `settings.json`).

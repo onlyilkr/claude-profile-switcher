@@ -44,6 +44,7 @@ struct LevelDBWriter {
         guard !puts.isEmpty, puts.count <= Int(UInt32.max) else { throw Self.notClean() }
         let reader = LevelDBReader(folder: folder)
         let url = try reader.currentLogURL()
+        try requireSingleLiveLog(logNumber: try reader.manifest().logNumber)
         guard let existing = try? Data(contentsOf: url) else {
             throw SwitcherError("Claude's local data is not in the expected format.", logReason: "leveldb current log missing")
         }
@@ -81,6 +82,18 @@ struct LevelDBWriter {
             throw SwitcherError(L("Could not write Claude's local data.", "Claude verisi yazılamadı."), logReason: "leveldb write failed")
         }
         return seq
+    }
+
+    /// More than one log at or above the MANIFEST's log number is a state the switcher has not seen: refuse.
+    private func requireSingleLiveLog(logNumber: UInt64) throws {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        let live = names.filter { name in
+            guard name.hasSuffix(".log"), let n = UInt64(name.dropLast(4)) else { return false }
+            return n >= logNumber
+        }
+        guard live.count <= 1 else {
+            throw SwitcherError("Claude's local data is not in the expected format.", logReason: "leveldb several live logs")
+        }
     }
 
     /// The file must stop exactly where a record ends, or where block padding (all zeros) completes a block.

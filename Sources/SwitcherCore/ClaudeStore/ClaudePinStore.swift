@@ -227,11 +227,14 @@ enum ClaudePinStore {
         }
         guard !fm.fileExists(atPath: dest.path) else { throw fail }
         do {
-            try fm.createDirectory(at: dest, withIntermediateDirectories: true)
+            try makeFolder(dest, below: backups)
             for rel in relativeItems(profile) {
-                let target = dest.appendingPathComponent(rel)
-                try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try fm.copyItem(at: profile.path.appendingPathComponent(rel), to: target)
+                let live = profile.path.appendingPathComponent(rel), target = dest.appendingPathComponent(rel)
+                try makeFolder(target, below: dest)
+                // Everything but LOCK: closing any descriptor on LOCK would drop the lock this process holds on it.
+                for name in try fm.contentsOfDirectory(atPath: live.path) where name != "LOCK" {
+                    try fm.copyItem(at: live.appendingPathComponent(name), to: target.appendingPathComponent(name))
+                }
             }
             let config = profile.path.appendingPathComponent("claude_desktop_config.json")
             if fm.fileExists(atPath: config.path) { try fm.copyItem(at: config, to: dest.appendingPathComponent(config.lastPathComponent)) }
@@ -243,6 +246,20 @@ enum ClaudePinStore {
         }
         prune(profile.id, backups: backups, keeping: dest.deletingLastPathComponent().lastPathComponent)
         return dest
+    }
+
+    /// Creates `folder` and every missing folder between it and `root` (which is created too) with 0700:
+    /// a backup holds the config, which can carry MCP environment values.
+    private static func makeFolder(_ folder: URL, below root: URL) throws {
+        let fm = FileManager.default
+        var chain = [folder]
+        while chain.last!.standardizedFileURL.path != root.standardizedFileURL.path, chain.last!.pathComponents.count > root.pathComponents.count {
+            chain.append(chain.last!.deletingLastPathComponent())
+        }
+        for url in chain.reversed() where !fm.fileExists(atPath: url.path) {
+            try fm.createDirectory(at: url, withIntermediateDirectories: url == chain.last, attributes: [.posixPermissions: 0o700])
+            chmod(url.path, 0o700)
+        }
     }
 
     /// Keeps the newest `keptBackups` time folders that hold this profile; other profiles' copies are left alone.
@@ -271,18 +288,17 @@ enum ClaudePinStore {
             for rel in relativeItems(profile) {
                 let live = profile.path.appendingPathComponent(rel), saved = backup.appendingPathComponent(rel)
                 let savedNames = Set(try fm.contentsOfDirectory(atPath: saved.path))
-                guard savedNames.contains("LOCK") else { throw fail }
                 for name in try fm.contentsOfDirectory(atPath: live.path) where name != "LOCK" {
                     try fm.removeItem(at: live.appendingPathComponent(name))
                 }
-                for name in savedNames where name != "LOCK" {
+                for name in savedNames {
                     try fm.copyItem(at: saved.appendingPathComponent(name), to: live.appendingPathComponent(name))
                 }
                 // Re-verify: the same files, byte for byte, and databases that read without tolerance.
-                for name in savedNames where name != "LOCK" {
+                for name in savedNames {
                     guard fm.contentsEqual(atPath: saved.appendingPathComponent(name).path, andPath: live.appendingPathComponent(name).path) else { throw fail }
                 }
-                guard try fm.contentsOfDirectory(atPath: live.path).filter({ $0 != "LOCK" }).count == savedNames.subtracting(["LOCK"]).count else { throw fail }
+                guard try fm.contentsOfDirectory(atPath: live.path).filter({ $0 != "LOCK" }).count == savedNames.count else { throw fail }
             }
             _ = try IndexedDBPins.find(in: LevelDBReader(folder: idbFolder(profile)))
             _ = try LevelDBReader(folder: lsFolder(profile)).maxSequence()

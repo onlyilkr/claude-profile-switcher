@@ -103,7 +103,7 @@ final class PanelState: ObservableObject {
     @Published var linkChats = false
     @Published var syncPins = true
     /// Why pin sync is refused for a lasting reason, shown under its toggle; nil when there is none.
-    @Published var pinSyncProblem: String?
+    @Published var pinSyncProblems: [String] = []
     @Published var showRoutingBanner = false
     @Published var errorMessage: String?
     /// Hidden until every open account is measured again, then shown the next time.

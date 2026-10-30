@@ -17,12 +17,11 @@ public final class Switcher {
     /// Starting a profile twice in that window would put two copies on one folder.
     public let claims: ProfileClaims
 
-    /// Why the last pin sync was refused in a way the user can act on (the account has no pin record yet,
-    /// or Claude stores pins in a form the switcher does not recognise); nil once a sync went through.
-    /// Read from the main thread, set from wherever the launch runs.
-    public var pinSyncProblem: String? { pinSyncProblemLock.lock(); defer { pinSyncProblemLock.unlock() }; return _pinSyncProblem }
-    private var _pinSyncProblem: String?
-    private let pinSyncProblemLock = NSLock()
+    /// Per profile id, why its last pin sync was refused in a way the user can act on (no pin record yet, or Claude's
+    /// pin storage is in a form the switcher does not recognise or cannot read safely). A note goes away once that
+    /// profile's pin storage was read again without trouble. Read from the main thread, set from wherever the launch runs.
+    public var pinSyncProblems: [String: String] { pinSyncNotes.all }
+    private let pinSyncNotes = PinSyncNotes()
 
     public init(paths: Paths = Paths(), ownBundleID: String? = nil, claudePath: String? = nil) throws {
         self.paths = paths
@@ -99,6 +98,12 @@ public final class Switcher {
         case .go:
             break
         }
+        // A failed restore leaves the account's data in doubt: Claude must not start on it.
+        if let stop = syncPinsBeforeLaunch(target) {
+            claims.dropStarting(target.id)
+            completion?(.failure(stop))
+            return
+        }
         // A profile that is not signed in yet is about to be: its sign-in is the one to expect.
         if expectSignIn, routingOn, SignInState.signedIn(profileDir: target.path) != true { pending.set(target.id) }
 
@@ -111,8 +116,6 @@ public final class Switcher {
         config.arguments = Switcher.launchArguments(for: target, extra: settings.profileArgs(target.id))
         let env = settings.profileEnv(target.id)
         if !env.isEmpty { config.environment = env }
-
-        syncPinsBeforeLaunch(target)
 
         let done: (NSRunningApplication?, Error?) -> Void = { _, error in
             DispatchQueue.main.async {
@@ -132,44 +135,65 @@ public final class Switcher {
     }
 
     /// Before an account opens: its pins for chats it shares follow the account used last.
-    /// Never blocks the launch; a failure is logged (no chat ids or titles) and the launch goes on.
-    private func syncPinsBeforeLaunch(_ target: Profile) {
-        guard settings.syncPins else { return }
+    /// A failure is logged (no chat ids or titles) and the launch goes on, except a failed restore, which is returned.
+    /// The starting claim counts as fresh for as long as the sync runs, so a second launch cannot slip in.
+    private func syncPinsBeforeLaunch(_ target: Profile) -> SwitcherError? {
+        guard settings.syncPins else { return nil }
+        claims.setSyncing(target.id, true)
+        defer { claims.setSyncing(target.id, false) }
         let profiles = store.list(status: true)
         // The target holds its own starting claim by now; it counts as open only when it is really running.
         let open = profiles.filter { $0.isRunning || ($0.id != target.id && isStarting($0)) }.map(\.path)
-        Switcher.syncPinsBeforeLaunch(target: target, among: profiles, openFolders: open, enabled: true, transfer: transfer,
+        return Switcher.syncPinsBeforeLaunch(target: target, among: profiles, openFolders: open, enabled: true, transfer: transfer,
                                       backups: paths.pinStoreBackups, lastUsed: { ProfileStore.lastUsed($0.path) },
-                                      problem: { self.pinSyncProblemLock.lock(); self._pinSyncProblem = $0; self.pinSyncProblemLock.unlock() },
+                                      problem: { self.pinSyncNotes.set($0, $1) },
                                       log: { self.log($0) }, logError: { self.logError($0) })
     }
 
     /// The part of the launch that is testable without Claude. `openFolders` are the running and
-    /// starting profiles; a target among them is left alone.
+    /// starting profiles; a target among them is left alone. `problem` gets the target's id and its note (nil clears it).
+    /// Returns the error that must stop the launch (a restore that failed), nil otherwise.
     static func syncPinsBeforeLaunch(target: Profile, among: [Profile], openFolders: [URL], enabled: Bool, transfer: ChatTransfer,
-                                     backups: URL, lastUsed: (Profile) -> Date?, problem: (String?) -> Void, log: (String) -> Void, logError: (String) -> Void) {
-        guard enabled else { return }
-        if openFolders.contains(where: { ProfileStore.sameItem($0, target.path) }) { return }
+                                     backups: URL, lastUsed: (Profile) -> Date?, problem: (String, String?) -> Void, log: (String) -> Void,
+                                     logError: (String) -> Void) -> SwitcherError? {
+        guard enabled else { return nil }
+        if openFolders.contains(where: { ProfileStore.sameItem($0, target.path) }) { return nil }
         let targetIDs = transfer.chatIDs(in: target)
-        guard let source = PinSync.source(for: target, among: among, lastUsed: lastUsed, transfer: transfer, targetIDs: targetIDs) else { return }
+        guard let source = PinSync.source(for: target, among: among, lastUsed: lastUsed, transfer: transfer, targetIDs: targetIDs) else { return nil }
         do {
             // The note is cleared only once the target was actually read.
             let outcome = try PinSync.plan(target: target, source: source, transfer: transfer, targetIDs: targetIDs, logError: logError)
             let plan: PinSyncPlan
             switch outcome {
-            case .skipped: return
-            case .noChange: problem(nil); return
+            case .skipped: return nil
+            case .noChange: problem(target.id, nil); return nil
             case .change(let p): plan = p
             }
             try PinSync.apply(plan, to: target, transfer: transfer, openFolders: openFolders, backups: backups, logError: logError)
-            problem(nil)
+            problem(target.id, nil)
             let pinned = plan.newPins.filter { !plan.seen.sidebar.contains($0) }.count, unpinned = plan.seen.sidebar.filter { !plan.newPins.contains($0) }.count
             log("Pins synced from '\(source.name)' to '\(target.name)' (\(pinned) pinned, \(unpinned) unpinned)")
         } catch {
             // Fixed, path-free reasons only: the user-facing messages quote file paths and the log is pasted into bug reports.
             let reason = (error as? SwitcherError)?.logReason ?? Switcher.describe(error)
-            if let e = error as? SwitcherError, e.logReason == "no pin record yet" || e.logReason == "pin store format not recognised" { problem(e.message) }
+            if let e = error as? SwitcherError, let note = pinSyncNote(for: e, target: target) { problem(target.id, note) }
             logError("Pin sync for '\(target.name)' failed: \(reason)")
+            if let e = error as? SwitcherError, e.logReason == "pin store restore failed" { return e }
+        }
+        return nil
+    }
+
+    /// The panel note for a refusal that will repeat until the user acts; nil for anything that may pass by itself.
+    static func pinSyncNote(for error: SwitcherError, target: Profile) -> String? {
+        switch error.logReason {
+        case "no pin record yet", "pin store format not recognised":
+            return error.message
+        case "leveldb read failed", "leveldb log not clean", "leveldb lock missing", "leveldb current log missing":
+            let name = target.name
+            return L("Claude's pin storage in '\(name)' could not be read safely, so pins were not synced there.",
+                     "'\(name)' hesabındaki Claude pin deposu güvenle okunamadı, bu yüzden pinler orada eşitlenmedi.")
+        default:
+            return nil
         }
     }
 
@@ -476,4 +500,15 @@ public final class Switcher {
             _ = bytes.withUnsafeBufferPointer { write(fd, $0.baseAddress, $0.count) }
         }
     }
+}
+
+/// The panel notes about refused pin syncs, one per profile id, safe to use from any thread.
+final class PinSyncNotes {
+    private var notes: [String: String] = [:]
+    private let lock = NSLock()
+
+    var all: [String: String] { lock.lock(); defer { lock.unlock() }; return notes }
+
+    /// nil clears the profile's note; other profiles' notes stay.
+    func set(_ id: String, _ note: String?) { lock.lock(); defer { lock.unlock() }; notes[id] = note }
 }

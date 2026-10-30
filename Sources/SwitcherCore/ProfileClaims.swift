@@ -16,6 +16,8 @@ public final class ProfileClaims {
         var kind: String
         var pid: Int32
         var since: Date
+        /// The owner is busy before it opens Claude (pin sync); the claim stays fresh while that process lives.
+        var syncing: Bool?
     }
 
     private let file: URL
@@ -51,6 +53,20 @@ public final class ProfileClaims {
             claims[key] = Claim(kind: "starting", pid: ownPID, since: now())
             try save(claims)
             return .go
+        }
+    }
+
+    /// Marks this process's starting claim as busy (or done). While busy it counts as fresh however long the work
+    /// takes, as long as this process lives; when it ends, the usual window starts from that moment.
+    public func setSyncing(_ id: String, _ on: Bool) {
+        let key = id.lowercased()
+        try? FileLock.exclusively(lockFile) {
+            var claims = load()
+            guard var claim = claims[key], claim.kind == "starting", claim.pid == ownPID else { return }
+            claim.syncing = on ? true : nil
+            if !on { claim.since = now() }
+            claims[key] = claim
+            try? save(claims)
         }
     }
 
@@ -103,7 +119,8 @@ public final class ProfileClaims {
     // MARK: File
 
     private func isFreshStarting(_ claim: Claim) -> Bool {
-        claim.kind == "starting" && now().timeIntervalSince(claim.since) < ProfileClaims.startingWindow
+        guard claim.kind == "starting" else { return false }
+        return now().timeIntervalSince(claim.since) < ProfileClaims.startingWindow || (claim.syncing == true && isAlive(claim.pid))
     }
 
     private func isLiveWriting(_ claim: Claim) -> Bool {
