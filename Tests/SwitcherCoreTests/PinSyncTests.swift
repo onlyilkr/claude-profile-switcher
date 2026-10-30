@@ -47,13 +47,13 @@ final class PinSyncTests: XCTestCase {
     }
 
     func apply(_ plan: PinSyncPlan, to t: Profile, openFolders: [URL] = []) throws {
-        try PinSync.apply(plan, to: t, transfer: transfer, openFolders: openFolders, backups: backupsDir)
+        try PinSync.apply(plan, to: t, transfer: transfer, openFolders: openFolders, backups: backupsDir, logError: { _ in })
     }
 
     func testLastUsedOrderWinsForSharedPins() throws {
         let s = try profile("S", chats: ["local_a", "local_b", "local_c"], pins: ["local_c", "local_a"])
         let t = try profile("T", chats: ["local_a", "local_b", "local_c", "local_x"], pins: ["local_a", "local_x", "local_c"])
-        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change)
         XCTAssertEqual(plan.source, "S")
         XCTAssertEqual(plan.newPins, ["local_c", "local_a", "local_x"], "the source's order first, then the target-only pin")
     }
@@ -61,7 +61,7 @@ final class PinSyncTests: XCTestCase {
     func testSharedChatUnpinnedInSourceIsUnpinned() throws {
         let s = try profile("S", chats: ["local_s"], pins: [])
         let t = try profile("T", chats: ["local_s"], pins: ["local_s"])
-        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change)
         XCTAssertFalse(plan.newPins.contains("local_s"))
         XCTAssertEqual(plan.unstar, ["local_s"])
         try apply(plan, to: t)
@@ -72,7 +72,9 @@ final class PinSyncTests: XCTestCase {
     func testSourceWithoutPinRecordSkips() throws {
         let noRecord = try profile("S", chats: ["local_a"], pins: [], hasPinRecord: false)
         let t = try profile("T", chats: ["local_a"], pins: ["local_a"])
-        XCTAssertNil(try PinSync.plan(target: t, source: noRecord, transfer: transfer))
+        var logged: [String] = []
+        guard case .skipped = try PinSync.plan(target: t, source: noRecord, transfer: transfer, logError: { logged.append($0) }) else { return XCTFail("expected skipped") }
+        XCTAssertTrue(logged.isEmpty, "a source simply without a record skips silently")
         XCTAssertEqual(try storePins(t), ["local_a"])
     }
 
@@ -80,14 +82,16 @@ final class PinSyncTests: XCTestCase {
         let s = try profile("S", chats: ["local_a"], pins: [])
         let t = try profile("T", chats: ["local_a"], pins: ["local_a"])
         try FileManager.default.removeItem(at: ClaudeStoreFixture.idbFolder(s))
-        XCTAssertNil(try PinSync.plan(target: t, source: s, transfer: transfer), "an unreadable source must not unpin the target")
+        var logged: [String] = []
+        guard case .skipped = try PinSync.plan(target: t, source: s, transfer: transfer, logError: { logged.append($0) }) else { return XCTFail("an unreadable source must not unpin the target") }
+        XCTAssertEqual(logged, ["Pin sync for 'T' skipped: source pins unreadable"])
         XCTAssertEqual(try storePins(t), ["local_a"])
     }
 
     func testTargetWithoutPinRecordIsRefused() throws {
         let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
         let t = try profile("T", chats: ["local_a"], pins: [], hasPinRecord: false)
-        XCTAssertThrowsError(try PinSync.plan(target: t, source: s, transfer: transfer)) {
+        XCTAssertThrowsError(try PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change) {
             XCTAssertEqual(($0 as? SwitcherError)?.logReason, "no pin record yet")
         }
     }
@@ -95,14 +99,14 @@ final class PinSyncTests: XCTestCase {
     func testStaleTargetPinsAreKept() throws {
         let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
         let t = try profile("T", chats: ["local_a"], pins: ["local_gone"])   // pinned, but no record of it
-        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change)
         XCTAssertEqual(plan.newPins, ["local_a", "local_gone"])
     }
 
     func testOnlyChatsInBothProfilesAreTouched() throws {
         let s = try profile("S", chats: ["local_a", "local_s"], pins: ["local_s", "local_a"])
         let t = try profile("T", chats: ["local_a", "local_t"], pins: ["local_t"])
-        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change)
         XCTAssertEqual(plan.newPins, ["local_a", "local_t"], "local_s is not in the target and is not brought along")
         XCTAssertEqual(plan.star, ["local_a"])
         XCTAssertEqual(plan.unstar, [])
@@ -113,7 +117,7 @@ final class PinSyncTests: XCTestCase {
     func testDeletedChatsAreIgnored() throws {
         let s = try profile("S", chats: ["local_a", "local_d"], pins: ["local_d", "local_a"])
         let t = try profile("T", chats: ["local_a", "local_d"], pins: [], deleted: ["d"])
-        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change)
         XCTAssertEqual(plan.newPins, ["local_a"])
         XCTAssertEqual(plan.star, ["local_a"])
     }
@@ -125,7 +129,7 @@ final class PinSyncTests: XCTestCase {
         let second = ChatTransfer.sessionRoot(t).appendingPathComponent("acct/org2")
         try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: ["sessionId": "local_a", "extra": 1]).write(to: second.appendingPathComponent("local_a.json"))
-        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change)
         try apply(plan, to: t)
         XCTAssertEqual(try ClaudePinStore.read(t, tolerateTornTail: false)?.sidebar, plan.newPins)
         XCTAssertEqual(try storePins(t), ["local_a"])
@@ -140,13 +144,13 @@ final class PinSyncTests: XCTestCase {
         XCTAssertFalse(((try? FileManager.default.contentsOfDirectory(atPath: backupsDir.path)) ?? []).isEmpty, "the store is backed up")
         let cfg = try JSONSerialization.jsonObject(with: Data(contentsOf: ChatTransfer.configFile(t))) as! [String: Any]
         XCTAssertNotNil(cfg["mcpServers"], "other config keys kept")
-        XCTAssertNil(try PinSync.plan(target: t, source: s, transfer: transfer), "and nothing is left to do")
+        XCTAssertNil(try PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change, "and nothing is left to do")
     }
 
-    func testNothingToChangeIsNil() throws {
+    func testNothingToChangeIsNoChange() throws {
         let s = try profile("S", chats: ["local_a", "local_b"], pins: ["local_a", "local_b"])
         let t = try profile("T", chats: ["local_a", "local_b"], pins: ["local_a", "local_b"])
-        XCTAssertNil(try PinSync.plan(target: t, source: s, transfer: transfer))
+        guard case .noChange = try PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }) else { return XCTFail("expected noChange") }
         XCTAssertFalse(FileManager.default.fileExists(atPath: backupsDir.path))
         XCTAssertEqual(backups(t.path), [])
     }
@@ -170,7 +174,7 @@ final class PinSyncTests: XCTestCase {
     func testOpenTargetIsRefused() throws {
         let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
         let t = try profile("T", chats: ["local_a"], pins: [])
-        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change)
         XCTAssertThrowsError(try apply(plan, to: t, openFolders: [t.path]))
         XCTAssertEqual(try storePins(t), [])
         XCTAssertEqual(transfer.pins(of: t), [])
@@ -213,7 +217,7 @@ final class PinSyncTests: XCTestCase {
         try skipUnlessCaseInsensitive()
         let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
         let t = try profile("Target", chats: ["local_a"], pins: [])
-        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change)
         XCTAssertThrowsError(try apply(plan, to: t, openFolders: [upperCased(t.path)]))
         XCTAssertEqual(try storePins(t), [])
     }
@@ -221,7 +225,7 @@ final class PinSyncTests: XCTestCase {
     func testStalePlanIsRefused() throws {
         let s = try profile("S", chats: ["local_a", "local_b"], pins: ["local_a"])
         let t = try profile("T", chats: ["local_a", "local_b"], pins: [])
-        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change)
         _ = try ClaudePinStore.write(["local_b"], to: t, backups: backupsDir)
         XCTAssertThrowsError(try apply(plan, to: t)) {
             XCTAssertEqual(($0 as? SwitcherError)?.logReason, "pins changed since planning")
@@ -236,7 +240,7 @@ final class PinSyncTests: XCTestCase {
         let locked = ChatTransfer.sessionRoot(t).appendingPathComponent("acct/org2")
         try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: ["sessionId": "local_b"]).write(to: locked.appendingPathComponent("local_b.json"))
-        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change)
         chmod(locked.path, 0o500)
         defer { chmod(locked.path, 0o700) }
         var logged: [String] = []
@@ -245,12 +249,12 @@ final class PinSyncTests: XCTestCase {
         XCTAssertEqual(try storePins(t), ["local_a", "local_b"], "the store is written")
         XCTAssertEqual(try record(t, "local_a")["isStarred"] as? Bool, true, "the other records were still written")
         chmod(locked.path, 0o700)
-        let again = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer), "the right store still has a mirror to heal")
+        let again = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change, "the right store still has a mirror to heal")
         XCTAssertEqual(again.newPins, ["local_a", "local_b"])
         XCTAssertEqual(again.star, ["local_b"])
         try apply(again, to: t)
         XCTAssertEqual(try record(t, "local_b", org: "org2")["isStarred"] as? Bool, true)
-        XCTAssertNil(try PinSync.plan(target: t, source: s, transfer: transfer))
+        XCTAssertNil(try PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change)
     }
 
     func testUnreadableConfigMirrorDoesNotFailTheSync() throws {
@@ -258,7 +262,7 @@ final class PinSyncTests: XCTestCase {
         let t = try profile("T", chats: ["local_a"], pins: [])
         let broken = Data(#"{"mcpServers": {"#.utf8)
         try broken.write(to: ChatTransfer.configFile(t))
-        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change)
         var logged: [String] = []
         try PinSync.apply(plan, to: t, transfer: transfer, openFolders: [], backups: backupsDir, logError: { logged.append($0) })
         XCTAssertEqual(try storePins(t), ["local_a"])
@@ -269,7 +273,7 @@ final class PinSyncTests: XCTestCase {
     func testMirrorsAreRepairedWhenTheStoreIsAlreadyRight() throws {
         let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
         let t = try profile("T", chats: ["local_a"], pins: ["local_a"], starred: [])   // store right, record not starred
-        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change)
         XCTAssertEqual(plan.newPins, plan.seen.sidebar)
         let before = try ClaudeStoreFixture.snapshot(t.path.appendingPathComponent("IndexedDB"))
         try apply(plan, to: t)
@@ -281,9 +285,9 @@ final class PinSyncTests: XCTestCase {
     func testUnstarRecordWithoutKey() throws {
         let s = try profile("S", chats: ["local_a"], pins: [])
         let t = try profile("T", chats: ["local_a"], pins: [], starred: [])
-        XCTAssertNil(try PinSync.plan(target: t, source: s, transfer: transfer), "no pin and no star: nothing to do")
+        XCTAssertNil(try PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change, "no pin and no star: nothing to do")
         let u = try profile("U", chats: ["local_a"], pins: ["local_a"], starred: [])
-        let plan = try XCTUnwrap(PinSync.plan(target: u, source: s, transfer: transfer))
+        let plan = try XCTUnwrap(PinSync.plan(target: u, source: s, transfer: transfer, logError: { _ in }).change)
         try apply(plan, to: u)
         XCTAssertNil(try record(u, "local_a")["isStarred"], "no write needed for a record without the key")
         XCTAssertEqual(try storePins(u), [])
@@ -347,6 +351,16 @@ final class PinSyncTests: XCTestCase {
         XCTAssertFalse(lines.problems.contains { $0 != nil })
     }
 
+    func testUnreadableSourceKeepsTheProblemAndLogsAFixedReason() throws {
+        let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
+        let t = try profile("T", chats: ["local_a"], pins: [])
+        try FileManager.default.removeItem(at: ClaudeStoreFixture.idbFolder(s))
+        let lines = runLaunchSync(t, s)
+        XCTAssertTrue(lines.problems.isEmpty, "the target was never read, so the note is neither set nor cleared")
+        XCTAssertEqual(lines.errors, ["Pin sync for 'T' skipped: source pins unreadable"])
+        XCTAssertEqual(try storePins(t), [])
+    }
+
     func testFormatRefusalSetsPanelProblem() throws {
         let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
         let t = try profile("T", chats: ["local_a"], pins: [], lsVersion: "2")
@@ -404,7 +418,7 @@ final class PinSyncTests: XCTestCase {
     func testLoggedReasonsOfTheKnownFailures() throws {
         let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
         let t = try profile("My Profile", chats: ["local_a"], pins: [])
-        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer))
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change)
         func reason(_ body: () throws -> Void) -> String? {
             do { try body(); return nil } catch { return (error as? SwitcherError)?.logReason }
         }

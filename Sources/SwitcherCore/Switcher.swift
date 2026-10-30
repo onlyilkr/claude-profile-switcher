@@ -153,7 +153,14 @@ public final class Switcher {
         let targetIDs = transfer.chatIDs(in: target)
         guard let source = PinSync.source(for: target, among: among, lastUsed: lastUsed, transfer: transfer, targetIDs: targetIDs) else { return }
         do {
-            guard let plan = try PinSync.plan(target: target, source: source, transfer: transfer, targetIDs: targetIDs) else { problem(nil); return }
+            // The note is cleared only once the target was actually read.
+            let outcome = try PinSync.plan(target: target, source: source, transfer: transfer, targetIDs: targetIDs, logError: logError)
+            let plan: PinSyncPlan
+            switch outcome {
+            case .skipped: return
+            case .noChange: problem(nil); return
+            case .change(let p): plan = p
+            }
             try PinSync.apply(plan, to: target, transfer: transfer, openFolders: openFolders, backups: backups, logError: logError)
             problem(nil)
             let pinned = plan.newPins.filter { !plan.seen.sidebar.contains($0) }.count, unpinned = plan.seen.sidebar.filter { !plan.newPins.contains($0) }.count
