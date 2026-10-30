@@ -29,6 +29,9 @@ public struct Paths {
     public var pendingSignIn: URL { switcherHome.appendingPathComponent("pending-sign-in.json") }
     public var claimsFile: URL { switcherHome.appendingPathComponent("claims.json") }
 
+    /// Copies of an account's pin databases taken before the switcher writes them, newest five per account.
+    public var pinStoreBackups: URL { switcherHome.appendingPathComponent("backups/pinstore", isDirectory: true) }
+
     /// Launcher apps go where Spotlight and Launchpad look, without needing admin rights.
     public var launcherDir: URL { home.appendingPathComponent("Applications", isDirectory: true) }
 
