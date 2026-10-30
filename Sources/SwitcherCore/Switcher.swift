@@ -17,6 +17,13 @@ public final class Switcher {
     /// Starting a profile twice in that window would put two copies on one folder.
     public let claims: ProfileClaims
 
+    /// Why the last pin sync was refused in a way the user can act on (the account has no pin record yet,
+    /// or Claude stores pins in a form the switcher does not recognise); nil once a sync went through.
+    /// Read from the main thread, set from wherever the launch runs.
+    public var pinSyncProblem: String? { pinSyncProblemLock.lock(); defer { pinSyncProblemLock.unlock() }; return _pinSyncProblem }
+    private var _pinSyncProblem: String?
+    private let pinSyncProblemLock = NSLock()
+
     public init(paths: Paths = Paths(), ownBundleID: String? = nil, claudePath: String? = nil) throws {
         self.paths = paths
         self.settings = Settings(file: paths.settingsFile)
@@ -132,26 +139,29 @@ public final class Switcher {
         // The target holds its own starting claim by now; it counts as open only when it is really running.
         let open = profiles.filter { $0.isRunning || ($0.id != target.id && isStarting($0)) }.map(\.path)
         Switcher.syncPinsBeforeLaunch(target: target, among: profiles, openFolders: open, enabled: true, transfer: transfer,
-                                      lastUsed: { ProfileStore.lastUsed($0.path) },
+                                      backups: paths.pinStoreBackups, lastUsed: { ProfileStore.lastUsed($0.path) },
+                                      problem: { self.pinSyncProblemLock.lock(); self._pinSyncProblem = $0; self.pinSyncProblemLock.unlock() },
                                       log: { self.log($0) }, logError: { self.logError($0) })
     }
 
     /// The part of the launch that is testable without Claude. `openFolders` are the running and
     /// starting profiles; a target among them is left alone.
     static func syncPinsBeforeLaunch(target: Profile, among: [Profile], openFolders: [URL], enabled: Bool, transfer: ChatTransfer,
-                                     lastUsed: (Profile) -> Date?, log: (String) -> Void, logError: (String) -> Void) {
+                                     backups: URL, lastUsed: (Profile) -> Date?, problem: (String?) -> Void, log: (String) -> Void, logError: (String) -> Void) {
         guard enabled else { return }
         if openFolders.contains(where: { ProfileStore.sameItem($0, target.path) }) { return }
         let targetIDs = transfer.chatIDs(in: target)
         guard let source = PinSync.source(for: target, among: among, lastUsed: lastUsed, transfer: transfer, targetIDs: targetIDs) else { return }
         do {
-            guard let plan = PinSync.plan(target: target, source: source, transfer: transfer, targetIDs: targetIDs) else { return }
-            try PinSync.apply(plan, to: target, transfer: transfer, openFolders: openFolders)
-            let pinned = plan.newPins.filter { !plan.seenPins.contains($0) }.count, unpinned = plan.seenPins.filter { !plan.newPins.contains($0) }.count
+            guard let plan = try PinSync.plan(target: target, source: source, transfer: transfer, targetIDs: targetIDs) else { problem(nil); return }
+            try PinSync.apply(plan, to: target, transfer: transfer, openFolders: openFolders, backups: backups, logError: logError)
+            problem(nil)
+            let pinned = plan.newPins.filter { !plan.seen.sidebar.contains($0) }.count, unpinned = plan.seen.sidebar.filter { !plan.newPins.contains($0) }.count
             log("Pins synced from '\(source.name)' to '\(target.name)' (\(pinned) pinned, \(unpinned) unpinned)")
         } catch {
             // Fixed, path-free reasons only: the user-facing messages quote file paths and the log is pasted into bug reports.
             let reason = (error as? SwitcherError)?.logReason ?? Switcher.describe(error)
+            if let e = error as? SwitcherError, e.logReason == "no pin record yet" || e.logReason == "pin store format not recognised" { problem(e.message) }
             logError("Pin sync for '\(target.name)' failed: \(reason)")
         }
     }
