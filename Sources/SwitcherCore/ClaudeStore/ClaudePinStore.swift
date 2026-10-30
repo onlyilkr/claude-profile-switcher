@@ -90,6 +90,7 @@ enum ClaudePinStore {
 
     private struct Loaded {
         let pins: ClaudePins
+        let sliceOrder: [String]
         let record: IndexedDBPinRecord
         let store: (entry: LevelDBEntry, obj: [String: Any])
         let slice: (entry: LevelDBEntry, obj: [String: Any])
@@ -120,9 +121,9 @@ enum ClaudePinStore {
         let slice = try parse(try live(sliceKey))
         let mirror = try parse(try live(mirrorKey))
         let order = try pinnedOrder(of: store.obj)
-        guard let value = slice.obj["value"] as? [String: Any], isStrings(value["pinnedOrder"]), isNumber(slice.obj["timestamp"]),
+        guard let value = slice.obj["value"] as? [String: Any], let sliceOrder = value["pinnedOrder"] as? [String], isNumber(slice.obj["timestamp"]),
               isStrings(mirror.obj["value"]), isNumber(mirror.obj["timestamp"]) else { throw unrecognised() }
-        return Loaded(pins: ClaudePins(starred: record.starredIds, order: order), record: record,
+        return Loaded(pins: ClaudePins(starred: record.starredIds, order: order), sliceOrder: sliceOrder, record: record,
                       store: store, slice: slice, mirror: mirror, meta: meta)
     }
 
@@ -153,7 +154,9 @@ enum ClaudePinStore {
         // New entries first, then every other existing entry in its old relative order.
         let fresh = wanted.map { "code:" + $0 }
         let freshSet = Set(fresh)
+        // Each key keeps its own other entries.
         let order = fresh + s.pins.order.filter { !freshSet.contains($0) }
+        let sliceOrder = fresh + s.sliceOrder.filter { !freshSet.contains($0) }
 
         var mirror = s.mirror.obj
         mirror["value"] = wanted
@@ -164,7 +167,7 @@ enum ClaudePinStore {
         store["state"] = state
         var slice = s.slice.obj
         var value = slice["value"] as? [String: Any] ?? [:]
-        value["pinnedOrder"] = order
+        value["pinnedOrder"] = sliceOrder
         slice["value"] = value
         slice["timestamp"] = stamp
 
@@ -196,8 +199,12 @@ enum ClaudePinStore {
 
     // MARK: Backup and restore
 
-    private static let relativeItems = ["IndexedDB/https_claude.ai_0.indexeddb.leveldb", "Local Storage/leveldb"]
     private static let keptBackups = 5
+
+    /// The database folders relative to the account folder.
+    private static func relativeItems(_ p: Profile) -> [String] {
+        [idbFolder(p), lsFolder(p)].map { String($0.path.dropFirst(p.path.path.count + 1)) }
+    }
 
     private static func stamp(_ date: Date) -> String {
         let f = DateFormatter()
@@ -221,7 +228,7 @@ enum ClaudePinStore {
         guard !fm.fileExists(atPath: dest.path) else { throw fail }
         do {
             try fm.createDirectory(at: dest, withIntermediateDirectories: true)
-            for rel in relativeItems {
+            for rel in relativeItems(profile) {
                 let target = dest.appendingPathComponent(rel)
                 try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try fm.copyItem(at: profile.path.appendingPathComponent(rel), to: target)
@@ -230,20 +237,24 @@ enum ClaudePinStore {
             if fm.fileExists(atPath: config.path) { try fm.copyItem(at: config, to: dest.appendingPathComponent(config.lastPathComponent)) }
         } catch {
             try? fm.removeItem(at: dest)
+            let stampDir = dest.deletingLastPathComponent()
+            if ((try? fm.contentsOfDirectory(atPath: stampDir.path)) ?? ["x"]).isEmpty { try? fm.removeItem(at: stampDir) }
             throw fail
         }
-        prune(profile.id, backups: backups)
+        prune(profile.id, backups: backups, keeping: dest.deletingLastPathComponent().lastPathComponent)
         return dest
     }
 
     /// Keeps the newest `keptBackups` time folders that hold this profile; other profiles' copies are left alone.
-    private static func prune(_ id: String, backups: URL) {
+    private static func prune(_ id: String, backups: URL, keeping current: String) {
         let fm = FileManager.default
         let names = ((try? fm.contentsOfDirectory(atPath: backups.path)) ?? [])
             .filter { $0.range(of: #"^\d{8}-\d{6}-\d{3}$"#, options: .regularExpression) != nil }
             .filter { fm.fileExists(atPath: backups.appendingPathComponent($0).appendingPathComponent(id).path) }
+            .filter { $0 != current }
             .sorted(by: >)
-        for name in names.dropFirst(keptBackups) {
+        // The backup just taken is never pruned, even when the clock is behind older copies.
+        for name in names.dropFirst(keptBackups - 1) {
             let dir = backups.appendingPathComponent(name)
             try? fm.removeItem(at: dir.appendingPathComponent(id))
             if ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? ["x"]).isEmpty { try? fm.removeItem(at: dir) }
@@ -257,7 +268,7 @@ enum ClaudePinStore {
                                    "Pinler yazılamadı ve Claude verisi otomatik geri yüklenemedi. Yedeğiniz şurada: \(backup.path)."),
                                  logReason: "pin store restore failed")
         do {
-            for rel in relativeItems {
+            for rel in relativeItems(profile) {
                 let live = profile.path.appendingPathComponent(rel), saved = backup.appendingPathComponent(rel)
                 let savedNames = Set(try fm.contentsOfDirectory(atPath: saved.path))
                 guard savedNames.contains("LOCK") else { throw fail }

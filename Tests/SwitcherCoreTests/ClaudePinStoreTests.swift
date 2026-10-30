@@ -238,4 +238,43 @@ final class ClaudePinStoreTests: XCTestCase {
         expectRefusal("store is locked") { try ClaudePinStore.write(["local_z"], to: p, backups: self.backups, now: self.now) }
         XCTAssertEqual(try ClaudeStoreFixture.snapshot(p.path), before)
     }
+
+    func testNewBackupSurvivesPruneWhenClockIsBehind() throws {
+        let p = try make()
+        for i in 0..<5 {   // five existing copies dated after "now"
+            let d = backups.appendingPathComponent("2099010\(i)-000000-000/p1")
+            try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        }
+        let before = try ClaudeStoreFixture.snapshot(ClaudeStoreFixture.lsFolder(p))
+        XCTAssertTrue(try ClaudePinStore.write(["local_z"], to: p, backups: backups, now: now))
+        let mine = backups.appendingPathComponent("20231114-221320-000/p1")
+        XCTAssertEqual(try ClaudeStoreFixture.snapshot(mine.appendingPathComponent("Local Storage/leveldb")), before)
+        XCTAssertEqual(backupCount(), 5)
+    }
+
+    func testEachKeyKeepsItsOwnOtherOrderEntries() throws {
+        let p = try make(order: ["cowork:x"])
+        let w = LevelDBWriter(folder: ClaudeStoreFixture.lsFolder(p))
+        let slice = #"{"value":{"pinnedOrder":["cowork:y","code:local_a"]},"tabId":"","timestamp":1}"#
+        _ = try LevelDBLock.withExclusive(ClaudeStoreFixture.lsFolder(p)) { try w.append([(LocalStorageCodec.key("LSS-persisted.dframe-local-slice"), LocalStorageCodec.encode(slice))]) }
+        XCTAssertTrue(try ClaudePinStore.write(["local_b"], to: p, backups: backups, now: now))
+        XCTAssertEqual(try order(p), ["code:local_b", "cowork:x"])
+        let value = try XCTUnwrap(try lsJSON(p, "LSS-persisted.dframe-local-slice")["value"] as? [String: Any])
+        XCTAssertEqual(value["pinnedOrder"] as? [String], ["code:local_b", "cowork:y", "code:local_a"])
+    }
+
+    func testHeldIndexedDBLockRefusesAndLocalStorageLockIsReleased() throws {
+        let p = try make()
+        let before = try ClaudeStoreFixture.snapshot(p.path)
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        child.arguments = ["-c", "import fcntl,sys,time\nf=open(sys.argv[1],'a+')\nfcntl.lockf(f,fcntl.LOCK_EX|fcntl.LOCK_NB)\nprint('ok',flush=True)\ntime.sleep(30)", ClaudeStoreFixture.idbFolder(p).appendingPathComponent("LOCK").path]
+        let out = Pipe(); child.standardOutput = out
+        try child.run()
+        XCTAssertEqual(String(decoding: out.fileHandleForReading.availableData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines), "ok")
+        expectRefusal("store is locked") { try ClaudePinStore.write(["local_z"], to: p, backups: self.backups, now: self.now) }
+        XCTAssertEqual(try ClaudeStoreFixture.snapshot(p.path), before)
+        child.terminate(); child.waitUntilExit()
+        XCTAssertTrue(try ClaudePinStore.write(["local_z"], to: p, backups: backups, now: now))
+    }
 }
