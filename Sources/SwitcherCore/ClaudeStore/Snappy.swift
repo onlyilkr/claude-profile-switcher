@@ -18,7 +18,8 @@ enum Snappy {
             shift += 7
         }
         var out = [UInt8]()
-        out.reserveCapacity(expected)
+        // The declared length is untrusted: don't let a tiny input reserve gigabytes.
+        out.reserveCapacity(min(expected, bytes.count * 64))
         while pos < bytes.count {
             let tag = bytes[pos]; pos += 1
             switch tag & 3 {
