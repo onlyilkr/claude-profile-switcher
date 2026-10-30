@@ -107,7 +107,7 @@ Three things about Claude on macOS shape the design (as observed with Claude Des
 | **Shared chats** | See which chats exist in several accounts and whether one copy is behind. Optional and experimental: keep worktree chats linked so both accounts continue one history. |
 | **Launchers** | `Claude - Work.app` in `~/Applications` with a coloured badge, for Spotlight, Launchpad and the Dock. |
 | **Per-account environment** | Environment variables and launch flags for one account's Claude, for example for an MCP server. |
-| **Your original stays put** | The account you already have keeps its folder, auto update and settings. The switcher writes there only while that account is closed and after a backup: when you transfer chats into it, when pin sync brings pins over as it opens it, or, with linking on, when a chat is linked. |
+| **Your original stays put** | The account you already have keeps its folder, auto update and settings. The switcher writes there only while that account is closed and after a backup: when you transfer chats into it, when pin sync brings pins over as it opens it (Claude's own pin list, see [Pins](#pins)), or, with linking on, when a chat is linked. |
 | **Native and small** | Swift and AppKit, one universal binary, no dependencies, no network access, English and Turkish. |
 
 ## Install
@@ -253,7 +253,7 @@ pick the target account.
 | `bridgeSessionIds` | Emptied: these are the old account's cloud session ids |
 | `scheduledTaskId` | Removed: it points at a task of the old account |
 | Everything else | Kept, including fields the switcher does not know |
-| Pin | If the chat is pinned in the source, it is pinned in the target too, after the target's own pins and in the source's order. With **Sync pins across accounts** on (the default), opening the target afterwards also makes the pins of every chat both accounts share follow the account you used last, usually the source (see [Pins](#pins)). |
+| Pin | If the chat is pinned in the source, it is pinned in the target too, on top of the target's own pins and in the source's order; it shows in Claude's sidebar there (see [Pins](#pins) for how and when). With **Sync pins across accounts** on (the default), opening the target afterwards also makes the pins of every chat both accounts share follow the account you used last, usually the source (see [Pins](#pins)). |
 
 Safety rules, the same as [claude-migrate](https://github.com/onlyilkr/claude-migrate):
 
@@ -270,10 +270,18 @@ Safety rules, the same as [claude-migrate](https://github.com/onlyilkr/claude-mi
 - **Uses the account the target is signed in to now.** If that account has not opened the Code tab
   yet, the transfer waits rather than fill a store Claude would never show. An account in several
   organisations gets the chats in the organisation it used most recently, and the summary says so.
-- The pin list lives in the target's `claude_desktop_config.json`, next to your MCP servers. Only the pin
-  list changes, and a dated copy of the file is kept beside it first
-  (`claude_desktop_config.json.switcher-backup-<time>`, the newest five). A symlinked file is written
-  through the link, so a shared config stays shared.
+- **Pins go into Claude's own pin list**, which Claude keeps in the target's local web storage, only
+  while the target is closed and after a backup (see [Pins](#pins)). The chats are copied even when the
+  pins cannot be written; the summary then says so and why. The copies of the pin list in the target's
+  `claude_desktop_config.json` (next to your MCP servers) and in the chat records' starred flag are updated
+  too, but Claude rewrites those, so they do not decide what the sidebar shows. A dated copy of the config
+  is kept beside it first (`claude_desktop_config.json.switcher-backup-<time>`, the newest five), and a
+  symlinked file is written through the link, so a shared config stays shared.
+- **Missing parent chats.** A sub-session shows under its parent chat only when every chat between them
+  exists in the target too. When some are missing there, the window offers **Also copy N parent chat(s)**
+  (on by default) and copies them first, farthest parent first. It stops at the first parent the target
+  already has, at one this account does not have, and at one you deleted in the target (never brought
+  back). Parents pinned in the source are pinned in the target like the chats you picked.
 
 The chat stays in the source account too. A chat that does not use a git worktree has one history
 file under `~/.claude/projects`, so both accounts continue the same history: finish in one account
@@ -395,30 +403,46 @@ had before linking either: Claude may have reused it in the meantime.
 
 ### Pins
 
-Claude keeps a pinned chat in two places, and the two match in each account: an ordered list in
-`claude_desktop_config.json` and a starred flag on each chat's record. When the switcher opens an
-account, the pins of the chats it shares with the account you used last follow that account:
+Claude keeps its pinned chats and their sidebar order in its own pin list, in each account's local web
+storage (the account folder's `IndexedDB` and `Local Storage`). The ordered list in
+`claude_desktop_config.json` and the starred flag on each chat's record are copies that Claude rewrites
+from its own list when it starts, so changing only those has no visible effect (1.1.0 did that). The
+switcher writes Claude's own list. When it opens an account, the pins of the chats it shares with the
+account you used last follow that account:
 
 - **The account you used last wins.** Among your other accounts that share at least one chat with the
   one being opened, the switcher takes the one that was used most recently, and only if it was used
-  after the account being opened. It may still be open: Claude 4.29 writes a pin change to disk within
-  seconds, so its pins are read as you left them. (Claude also writes its pins back when it quits, which
-  is why the account being opened must be closed.)
+  after the account being opened. It may still be open: its pins are read as you left them, without
+  locking or changing anything. (Claude also writes its pins back when it quits, which is why the
+  account being opened must be closed.)
 - **Only chats that exist in both accounts** are touched. Deleted chats are ignored.
-- **Same order.** The shared chats pinned there come first, in that order. A shared chat that is not
-  pinned there is unpinned in the opened account too (unpin follows).
-- **Pins of chats only the opened account has are kept**, after the shared ones, in their own order.
-- **The starred flag on the records follows the list**, so the two stay in step.
+- **Order.** The opened account's pins become: first every chat pinned in the other account that both
+  have, in the other account's sidebar order (its saved order, then its remaining pins sorted by id, the
+  way Claude shows them); then the opened account's own pins of chats the other account does not have, in
+  their own order.
+- **Unpinning follows the account used last.** A shared chat that is not pinned there is unpinned in the
+  opened account too. If the other account has no pin list at all, or it cannot be read, nothing is
+  changed (nothing is unpinned from missing data).
+- **The copies follow**: the config list and the records' starred flag are updated to match.
 - **Nothing is written when nothing would change.** A run that stopped halfway (list written, some
   records not) is repaired the next time pins sync into this account.
 
-This happens only when the switcher opens an account (the panel, a launcher, or `--launch`), and only
-while that account is closed; one that is already open or still starting is left alone. Opening
-Claude.app directly skips it. Before it writes, the switcher backs up the account's
-`claude_desktop_config.json` and the chat records it changes. It never blocks opening: if anything
-fails, the account still opens and the switcher's log gets one line with a fixed reason, such as
-"profile is open" or "pins changed since planning", and no chat names or file paths. It is on by
-default; turn it off with **Sync pins across accounts** in the panel (`SyncPins` in `settings.json`).
+The switcher writes only while the account is closed, and holds the storage's own lock for the whole
+write; an account that is open or still starting is left alone. Before it writes, it copies the account's
+two storage folders and `claude_desktop_config.json` to `backups/pinstore/<time>/<account>/` in the
+switcher's folder (the newest 5 per account are kept), and it restores them if the write fails or does
+not read back as written. The chat records it changes are backed up beside them first, as before.
+
+When the storage is not in the format the switcher has seen, nothing is written. The same goes for an
+account where Claude has not saved any pins yet (pin one chat there once). The panel says which of the
+two under the **Sync pins across accounts** switch, and the log gets one line with a fixed reason,
+never chat names or file paths. Opening is never blocked by any of this. It happens only when the
+switcher opens an account (the panel, a launcher, or `--launch`); opening Claude.app directly skips it.
+It is on by default; turn it off with **Sync pins across accounts** in the panel (`SyncPins` in
+`settings.json`).
+
+The chat transfer uses the same write: the copied chats that are pinned in the source are pinned at the
+top of the target, above its existing pins, in the source's order.
 
 ## Launchers
 
@@ -483,7 +507,7 @@ writes most of them; two are for hand editing:
 | `Labels`, `Colors` | Display names and badge colours, set from the panel. |
 | `SignInRouting`, `OpenLinksIn`, `RouterBackup` | Sign-in routing state. |
 | `ClaudePath` | Set by `--claude-path`. |
-| `SyncPins` | `false` turns off pin sync when the switcher opens an account; absent or `true` means on. Set from the panel. |
+| `SyncPins` | `false` turns off pin sync when the switcher opens an account (it does not affect the pins a chat transfer carries); absent or `true` means on. Set from the panel. |
 | `LinkWorktreeChats` | `true` when worktree chat linking is on; absent means off. Set from the panel. |
 
 If `settings.json` stops being valid JSON after a hand edit, the switcher stops saving anything and
@@ -505,6 +529,7 @@ Claude is closed.
 | Launchers | `~/Applications/Claude - <name>.app` |
 | Claude Code transcripts | `~/.claude/projects`, shared by all accounts |
 | Link list and backups of replaced transcripts | `~/Library/Application Support/Claude Profile Switcher/links.json` and `backups/transcripts/` |
+| Backups taken before pins are written | `~/Library/Application Support/Claude Profile Switcher/backups/pinstore/<time>/<account>/`, the newest 5 per account |
 
 A profile's folder name is its permanent id: Claude stores absolute paths inside its data, so
 renaming changes only the label.
@@ -512,8 +537,8 @@ renaming changes only the label.
 ## Safety and privacy
 
 - **Your original account's folder is left alone.** It is read for signed-in state, last use and usage, and
-  written only when you transfer chats into it (new chat records and the pin list), when pin sync brings pins over as the
-  switcher opens it (the pin list and the starred flag of shared chats; turn **Sync pins across accounts** off to stop it),
+  written only when you transfer chats into it (new chat records and the pins), when pin sync brings pins over as the
+  switcher opens it (Claude's pin list and its copies: the config list and the starred flag of shared chats; turn **Sync pins across accounts** off to stop it),
   or, with linking turned on, when a chat is linked (Sync, Link, Link all, or a transfer).
 - **One copy per profile.** Every launch checks which data folders are open first.
 - **Deleting moves to the Trash**, only for folders named `ClaudeProfile-<id>` directly under Application
@@ -635,7 +660,8 @@ press **Sync**; read [Shared chats](#shared-chats) first.
 2. Optionally move extra accounts to the Trash from the panel, which also removes their launchers.
 3. Quit the switcher and remove the app: `brew uninstall --cask claude-profile-switcher`, or drag it to
    the Trash. `brew uninstall --cask --zap claude-profile-switcher` also removes the switcher's settings,
-   logs and its backups of `claude_desktop_config.json`.
+   logs, its pin backups (`backups/pinstore`, which hold copies of an account's web storage) and its backups of
+   `claude_desktop_config.json`.
 
 Launchers you kept in `~/Applications` (`Claude - <name>.app`, including one for Default) stop working
 once the app is gone; drag them to the Trash too. Uninstalling never removes your extra accounts' folders (`~/Library/Application Support/ClaudeProfile-*`),

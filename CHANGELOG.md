@@ -9,8 +9,16 @@ All notable changes to this project are documented here. The format follows
 Fixes for races between the app and the command line, settings that failed silently, and a few
 hand-edited or unexpected files.
 
+### Added
+
+- The chat transfer also brings the missing parent chats of a sub-session, so it shows under its parent
+  in the target account (a toggle in the transfer window, on by default).
+
 ### Fixed
 
+- Pin sync and the transfer's pins now show in Claude's sidebar: 1.1.0 wrote a copy Claude ignores. The
+  account you used last is the base: its pinned shared chats come first, in its order, then the opened
+  account's own pins. A transfer puts the carried pins on top.
 - The app and the command line no longer both start one account in the moment before its window
   appears; launch decisions are shared between them.
 - An account the switcher is copying chats into cannot be opened or deleted until the copy finishes; it
