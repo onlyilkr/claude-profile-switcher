@@ -131,7 +131,7 @@ final class ChromiumStorageTests: XCTestCase {
         let r = try reader([(idbKey(prefix: [0x00, 0x01, 0x01, 0x01]), idbValue(json: extra))])
         var rec = try XCTUnwrap(IndexedDBPins.find(in: r))
         rec.starredIds = ["local_c"]
-        let v = rec.encoded(updatedAt: now)
+        let v = try rec.encoded(updatedAt: now)
         XCTAssertTrue(v.starts(with: rec.envelope))
         XCTAssertEqual(rec.envelope.last, 0x22)
         let len = Int(v[rec.envelope.count])   // short JSON: one-byte varint
@@ -143,6 +143,27 @@ final class ChromiumStorageTests: XCTestCase {
         let st = try XCTUnwrap(obj["state"] as? [String: Any])
         XCTAssertEqual(st["starredIds"] as? [String], ["local_c"])
         XCTAssertEqual(st["other"] as? Bool, true)
+    }
+
+    func testEncodedNonLatin1IdsStayValidLatin1Json() throws {
+        let r = try reader([(idbKey(prefix: [0x00, 0x01, 0x01, 0x01]), idbValue())])
+        var rec = try XCTUnwrap(IndexedDBPins.find(in: r))
+        let ids = ["local_é\u{FF}\u{80}", "local_ş\u{20AC}", "local_\u{1F600}"]
+        rec.starredIds = ids
+        let v = try rec.encoded(updatedAt: now)
+        // Every byte is a Latin-1 character, and the text decodes as JSON with the ids intact.
+        let text = try XCTUnwrap(String(data: v.dropFirst(rec.envelope.count + 1), encoding: .isoLatin1))
+        XCTAssertEqual(Data(text.unicodeScalars.map { UInt8($0.value) }), v.dropFirst(rec.envelope.count + 1))
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        XCTAssertEqual((obj["state"] as? [String: Any])?["starredIds"] as? [String], ids)
+    }
+
+    func testEncodedRefusesUntrappableDates() throws {
+        let r = try reader([(idbKey(prefix: [0x00, 0x01, 0x01, 0x01]), idbValue())])
+        let rec = try XCTUnwrap(IndexedDBPins.find(in: r))
+        for d in [Date(timeIntervalSince1970: .infinity), Date(timeIntervalSince1970: 1e300), Date(timeIntervalSince1970: -5)] {
+            XCTAssertThrowsError(try rec.encoded(updatedAt: d))
+        }
     }
 
     func testNoRecordIsNil() throws {

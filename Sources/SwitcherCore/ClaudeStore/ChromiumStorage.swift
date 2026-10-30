@@ -107,10 +107,15 @@ struct IndexedDBPinRecord {
         }
     }
 
-    func encoded(updatedAt: Date) -> Data {
+    /// Throws instead of ever producing an empty record: writing `{}` would wipe the account's pins.
+    func encoded(updatedAt: Date) throws -> Data {
         var obj = state
-        obj["updatedAt"] = Int((updatedAt.timeIntervalSince1970 * 1000).rounded())
-        let raw = (try? JSONSerialization.data(withJSONObject: obj, options: [.withoutEscapingSlashes])) ?? Data("{}".utf8)
+        let ms = (updatedAt.timeIntervalSince1970 * 1000).rounded()
+        guard ms.isFinite, ms >= 0, ms < 1e15 else { throw IndexedDBPins.bad() }
+        obj["updatedAt"] = Int(ms)
+        guard JSONSerialization.isValidJSONObject(obj),
+              let raw = try? JSONSerialization.data(withJSONObject: obj, options: [.withoutEscapingSlashes])
+        else { throw IndexedDBPins.bad() }
         // Latin-1 string: anything above U+00FF is written as a \u escape.
         var text = [UInt8]()
         for u in String(decoding: raw, as: UTF8.self).utf16 {
@@ -123,7 +128,7 @@ struct IndexedDBPinRecord {
 enum IndexedDBPins {
     static let storeName = "store:pin-state:dframe-starred-code"
 
-    private static func bad() -> SwitcherError {
+    static func bad() -> SwitcherError {
         SwitcherError("Claude's pin list is not in the expected format.", logReason: "pin store format not recognised")
     }
 
