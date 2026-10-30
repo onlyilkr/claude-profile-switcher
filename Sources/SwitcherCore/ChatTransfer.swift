@@ -26,6 +26,8 @@ public struct CodeSession: Identifiable, Equatable {
     public let hasTranscript: Bool
     /// The record's worktreePath, when the chat runs in a git worktree (nil if absent or empty).
     public var worktreePath: String? = nil
+    /// local_<id> of the chat this one was spawned from, unless the record says the lineage is detached.
+    public var parentID: String? = nil
 }
 
 public struct TargetStore {
@@ -134,6 +136,58 @@ public struct ChatTransfer {
         store.fileNames.insert(session.id)
         store.cliIDs.insert(session.cliSessionID)
         return .copied
+    }
+
+    // MARK: Parent chats
+
+    /// local_<id> of the chats the target account has, and of those it deleted (both name forms).
+    public struct TargetChats {
+        public let ids: Set<String>
+        public let deleted: Set<String>
+    }
+
+    public func targetChats(of target: Profile) -> TargetChats {
+        var deleted = Set<String>()
+        for account in subdirectories(ChatTransfer.sessionRoot(target)) {
+            for org in subdirectories(account) {
+                for marker in deletedMarkers(in: org) {
+                    deleted.insert(marker.hasPrefix("local_") ? marker : "local_" + marker)
+                }
+            }
+        }
+        return TargetChats(ids: chatIDs(in: target), deleted: deleted)
+    }
+
+    /// The parents (and their parents) of `picked` that the target lacks, farthest ancestor first,
+    /// without the picked chats themselves. Claude shows a sub-session under its parent only when
+    /// the whole chain up to a chat it knows is there. The walk stops at the first ancestor the
+    /// target has, one `all` does not list, one the target deleted (never revived), a cycle, or
+    /// after 32 steps. `all` is the source's sessions, so nothing is read from disk.
+    public func missingAncestors(of picked: [CodeSession], among all: [CodeSession], target: TargetChats) -> [CodeSession] {
+        let byID = Dictionary(all.map { ("local_" + $0.sessionID, $0) }, uniquingKeysWith: { a, _ in a })
+        let pickedIDs = Set(picked.map { "local_" + $0.sessionID })
+        var found: [String] = []
+        var seenIDs = Set<String>()
+        for chat in picked {
+            var chain: [String] = []
+            var visited: Set<String> = ["local_" + chat.sessionID]
+            var next = chat.parentID
+            var steps = 0
+            while let id = next, steps < 32 {
+                steps += 1
+                if !visited.insert(id).inserted || target.ids.contains(id) || target.deleted.contains(id) { break }
+                guard let parent = byID[id] else { break }
+                if !pickedIDs.contains(id) { chain.append(id) }
+                next = parent.parentID
+            }
+            // Collected nearest first; the copy list wants the farthest first.
+            for id in chain.reversed() where seenIDs.insert(id).inserted { found.append(id) }
+        }
+        return found.compactMap { byID[$0] }
+    }
+
+    public func missingAncestors(of picked: [CodeSession], from source: Profile, to target: Profile) -> [CodeSession] {
+        missingAncestors(of: picked, among: sessions(in: source), target: targetChats(of: target))
     }
 
     // MARK: Pins
@@ -294,7 +348,9 @@ public struct ChatTransfer {
                            priorCLISessionIDs: (raw["priorCliSessionIds"] as? [String]) ?? [],
                            title: title, folder: folder, updated: updated,
                            hasTranscript: !cli.isEmpty && transcripts.contains(cli),
-                           worktreePath: (raw["worktreePath"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+                           worktreePath: (raw["worktreePath"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                           parentID: (raw["lineageDetached"] as? Bool) == true ? nil
+                               : ((raw["spawnedFrom"] as? [String: Any])?["sessionId"] as? String).flatMap { $0.isEmpty ? nil : $0 })
     }
 
     func subdirectories(_ dir: URL) -> [URL] {

@@ -209,6 +209,54 @@ final class ChatTransferTests: XCTestCase {
         XCTAssertNil(byTitle["Empty"]?.worktreePath, "an empty path counts as none")
     }
 
+    // MARK: Missing parent chats
+
+    func parented(_ id: String, _ parent: String?, detached: Bool = false) throws {
+        var extra: [String: Any] = [:]
+        if let parent { extra["spawnedFrom"] = ["sessionId": "local_\(parent)"] }
+        if detached { extra["lineageDetached"] = true }
+        try record(id, cli: "c-\(id)", title: id, extra: extra)
+    }
+
+    func ancestorIDs(pick: [String]) -> [String] {
+        let all = transfer.sessions(in: source)
+        let picked = all.filter { pick.contains($0.sessionID) }
+        return transfer.missingAncestors(of: picked, from: source, to: target).map { "local_\($0.sessionID)" }
+    }
+
+    func testMissingAncestorsStopAtTheFirstOneTheTargetHas() throws {
+        try parented("A", nil); try parented("B", "A"); try parented("C", "B")
+        try write(storeDir(target, acctB, orgB).appendingPathComponent("local_A.json"), ["sessionId": "local_A"])
+        XCTAssertEqual(ancestorIDs(pick: ["C"]), ["local_B"])
+    }
+
+    func testMissingAncestorsAreRootFirst() throws {
+        try parented("A", nil); try parented("B", "A"); try parented("C", "B")
+        XCTAssertEqual(ancestorIDs(pick: ["C"]), ["local_A", "local_B"])
+    }
+
+    func testDetachedLineageIsNotFollowed() throws {
+        try parented("A", nil); try parented("B", "A", detached: true); try parented("C", "B")
+        XCTAssertEqual(ancestorIDs(pick: ["B"]), [], "a detached chat shows at the top level, so its parent is not needed")
+        XCTAssertEqual(ancestorIDs(pick: ["C"]), ["local_B"], "the walk stops at the detached B: A is not followed")
+    }
+
+    func testDeletedInTargetIsNotRevived() throws {
+        try parented("A", nil); try parented("B", "A"); try parented("C", "B")
+        FileManager.default.createFile(atPath: storeDir(target, acctB, orgB).appendingPathComponent("deleted_B").path, contents: Data())
+        XCTAssertEqual(ancestorIDs(pick: ["C"]), [])
+    }
+
+    func testAncestorMissingInSourceStops() throws {
+        try parented("C", "B")
+        XCTAssertEqual(ancestorIDs(pick: ["C"]), [])
+    }
+
+    func testCycleAndPickedDuplicatesAreHandled() throws {
+        try parented("A", "C"); try parented("B", "A"); try parented("C", "B")
+        XCTAssertEqual(Set(ancestorIDs(pick: ["B", "C"])), ["local_A"])
+    }
+
     func testSkipRules() throws {
         try record("del", cli: "c-del")
         try record("gone", cli: "c-gone")

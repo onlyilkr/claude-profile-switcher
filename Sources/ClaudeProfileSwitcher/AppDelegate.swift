@@ -589,7 +589,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Weak, so the window and the view's closures do not keep each other alive.
         final class WindowRef { weak var window: NSWindow? }
         let ref = WindowRef()
+        // The target's chats are read once per target, on first use; the source's come from the list.
+        var targetChats: [String: ChatTransfer.TargetChats] = [:]
         let view = TransferView(sourceName: source.name, sessions: sessions, targets: targets,
+                                ancestors: { picked, target in
+                                    let known = targetChats[target.id] ?? sw.transfer.targetChats(of: target)
+                                    targetChats[target.id] = known
+                                    return sw.transfer.missingAncestors(of: picked, among: sessions, target: known)
+                                },
                                 onCancel: { ref.window?.close() },
                                 onCopy: { [weak self] picked, target in
                                     ref.window?.close()
