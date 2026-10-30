@@ -134,4 +134,53 @@ final class LevelDBReaderTests: XCTestCase {
     func testMissingCurrentIsRejected() {
         XCTAssertThrowsError(try LevelDBReader(folder: folder).manifest())
     }
+
+    // MARK: Hostile input must throw, never trap
+
+    func testSequenceOverflowInBatchIsRejected() throws {
+        try fx.writeLog(number: 8, batches: [B(sequence: .max, ops: [(d("a"), d("1")), (d("b"), d("2"))])])
+        try fx.writeManifest(logNumber: 8, lastSequence: 1, liveTables: [])
+        let r = LevelDBReader(folder: folder)
+        XCTAssertThrowsError(try r.maxSequence())
+        XCTAssertThrowsError(try r.newest(d("a")))
+    }
+
+    /// Writes table 5 with one data block (`block`, stored as-is) indexed by `handle` (default: the real one).
+    private func hostileTable(block: [UInt8], handle: [UInt8]? = nil) throws -> LevelDBReader {
+        var file = [UInt8]()
+        let real = LevelDBFixture.appendBlock(block, to: &file, .none)
+        let meta = LevelDBFixture.appendBlock(LevelDBFixture.block([], restartInterval: 16), to: &file, .none)
+        let index = LevelDBFixture.appendBlock(LevelDBFixture.block([([0x61], handle ?? real)], restartInterval: 1), to: &file, .none)
+        var footer = meta + index
+        footer += [UInt8](repeating: 0, count: 40 - footer.count)
+        file += footer + LevelDBFixture.le(0xdb4775248b80fb57, 8)
+        try Data(file).write(to: folder.appendingPathComponent("000005.ldb"))
+        try fx.writeManifest(logNumber: 8, lastSequence: 1, liveTables: [5])
+        return LevelDBReader(folder: folder)
+    }
+
+    func testBlockWithRestartCountBeyondItsSizeIsRejected() throws {
+        let r = try hostileTable(block: LevelDBFixture.le(1000, 4))
+        XCTAssertThrowsError(try r.maxSequence())
+    }
+
+    func testEntrySharingMoreThanThePreviousKeyIsRejected() throws {
+        // shared 5 with no previous key, 1 new byte, empty value; one restart at 0
+        let block: [UInt8] = [5, 1, 0, 0x61] + LevelDBFixture.le(0, 4) + LevelDBFixture.le(1, 4)
+        XCTAssertThrowsError(try hostileTable(block: block).maxSequence())
+    }
+
+    func testBlockHandleBeyondFileEndIsRejected() throws {
+        let r = try hostileTable(block: LevelDBFixture.block([], restartInterval: 16),
+                                 handle: LevelDBFixture.varint(1_000_000) + LevelDBFixture.varint(10))
+        XCTAssertThrowsError(try r.maxSequence())
+    }
+
+    func testOverlongVarintIsRejected() throws {
+        // eleven continuation bytes, then a tenth byte that would overflow 64 bits
+        let tooLong = [UInt8](repeating: 0xFF, count: 11) + [0x01]
+        XCTAssertThrowsError(try hostileTable(block: tooLong + LevelDBFixture.le(0, 4) + LevelDBFixture.le(1, 4)).maxSequence())
+        let overflowing = [UInt8](repeating: 0xFF, count: 9) + [0x02]
+        XCTAssertThrowsError(try hostileTable(block: overflowing + LevelDBFixture.le(0, 4) + LevelDBFixture.le(1, 4)).maxSequence())
+    }
 }

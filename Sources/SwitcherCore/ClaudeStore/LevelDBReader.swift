@@ -180,11 +180,13 @@ struct LevelDBReader {
         var c = Cursor(batch)
         let seq = UInt64(try c.fixed(8)), count = try c.fixed(4)
         for n in 0..<count {
+            let (sequence, overflow) = seq.addingReportingOverflow(n)
+            guard !overflow else { throw fail() }
             let op = try c.fixed(1)
             let key = try c.lengthPrefixed()
             switch op {
-            case 1: visit(LevelDBEntry(key: Data(key), sequence: seq + n, isPut: true, value: Data(try c.lengthPrefixed())))
-            case 0: visit(LevelDBEntry(key: Data(key), sequence: seq + n, isPut: false, value: Data()))
+            case 1: visit(LevelDBEntry(key: Data(key), sequence: sequence, isPut: true, value: Data(try c.lengthPrefixed())))
+            case 0: visit(LevelDBEntry(key: Data(key), sequence: sequence, isPut: false, value: Data()))
             default: throw fail()
             }
         }
@@ -259,6 +261,7 @@ struct LevelDBReader {
             while shift < 70 {
                 guard pos < bytes.count else { throw LevelDBReader.fail() }
                 let b = bytes[pos]; pos += 1
+                if shift == 63 && b > 1 { throw LevelDBReader.fail() }   // would lose high bits
                 result |= UInt64(b & 0x7F) << shift
                 if b & 0x80 == 0 { return result }
                 shift += 7
