@@ -58,7 +58,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// A pin sync writes two databases one after the other; quitting waits for it so the pair is never cut off.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let sw = switcher, sw.pinSyncRunning else { return .terminateNow }
-        sw.onPinSyncIdle = { NSApp.reply(toApplicationShouldTerminate: true) }
+        // Reply once: when the syncs are over, or after 60 s so a stuck sync cannot keep the app from quitting.
+        var replied = false
+        let reply = { [weak sw] in
+            guard !replied else { return }
+            replied = true
+            sw?.onPinSyncIdle = nil
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        sw.onPinSyncIdle = reply
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) {
+            if !replied { sw.log("Quit waited 60 s for a pin sync; quitting anyway") }
+            reply()
+        }
         return .terminateLater
     }
 

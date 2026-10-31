@@ -230,16 +230,22 @@ enum CLI {
         sw.launch(target, link: link) { outcome = $0 }
         // The pin sync can take as long as it takes (and must not be cut off between its two writes); the 30 s
         // for Launch Services start once it is over.
+        // A sync that has not ended after 5 minutes is stuck: give up rather than wait forever.
         var until: Date?
+        let syncLimit = Date().addingTimeInterval(300)
+        var syncStuck = false
         while outcome == nil {
             if sw.pinSyncRunning { until = nil } else if until == nil { until = Date().addingTimeInterval(30) }
             if let until, Date() >= until { break }
+            if until == nil, Date() >= syncLimit { syncStuck = true; break }
             RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.1))
         }
         switch outcome {
         case .success(.focused)?: print("Brought '\(target.name)' forward.")
         case .success?: break
         case .failure(let error)?: throw SwitcherError("Could not open '\(target.name)': \(error.localizedDescription)")
+        case nil where syncStuck:
+            throw SwitcherError("Could not open '\(target.name)': the pin sync did not finish within 5 minutes.")
         case nil: throw SwitcherError("Could not open '\(target.name)': macOS did not answer within 30 seconds.")
         }
     }
