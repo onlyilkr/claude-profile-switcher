@@ -60,6 +60,16 @@ enum ClaudePinStore {
         return ClaudePins(starred: record.starredIds, order: order)
     }
 
+    /// True when both databases read without any tolerance, as they must before Claude may open on them again.
+    static func readsClean(_ profile: Profile) -> Bool {
+        do {
+            _ = try read(profile, tolerateTornTail: false)
+            _ = try IndexedDBPins.find(in: LevelDBReader(folder: idbFolder(profile)))
+            _ = try LevelDBReader(folder: lsFolder(profile)).maxSequence()
+            return true
+        } catch { return false }
+    }
+
     // MARK: Write
 
     /// Makes `sidebar` the account's pins and their order. Returns false when nothing needed writing.
@@ -291,7 +301,7 @@ enum ClaudePinStore {
         let fm = FileManager.default
         let fail = SwitcherError(L("Pins could not be written and Claude's data could not be restored automatically. Your backup is in \(backup.path).",
                                    "Pinler yazılamadı ve Claude verisi otomatik geri yüklenemedi. Yedeğiniz şurada: \(backup.path)."),
-                                 logReason: "pin store restore failed")
+                                 logReason: "pin store restore failed", detail: backup.path)
         do {
             for rel in relativeItems(profile) {
                 let live = profile.path.appendingPathComponent(rel), saved = backup.appendingPathComponent(rel)

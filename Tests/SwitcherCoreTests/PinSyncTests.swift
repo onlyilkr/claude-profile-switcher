@@ -305,10 +305,12 @@ final class PinSyncTests: XCTestCase {
 
     final class Lines { var info: [String] = []; var errors: [String] = []; var problems: [String?] = []; var problemIDs: [String] = []; var stop: SwitcherError? }
 
+    lazy var markers = RestoreFailures(file: home.appendingPathComponent("restore-failed.json"))
+
     func runLaunchSync(_ t: Profile, _ s: Profile, enabled: Bool = true, open: [URL] = [], lines: Lines = Lines()) -> Lines {
         let now = Date()
         lines.stop = Switcher.syncPinsBeforeLaunch(target: t, among: [s, t], openFolders: open, enabled: enabled, transfer: transfer,
-                                      backups: backupsDir, lastUsed: { $0.id == "S" ? now : now.addingTimeInterval(-3600) },
+                                      backups: backupsDir, restoreFailures: markers, lastUsed: { $0.id == "S" ? now : now.addingTimeInterval(-3600) },
                                       problem: { lines.problemIDs.append($0); lines.problems.append($1) },
                                       log: { lines.info.append($0) }, logError: { lines.errors.append($0) })
         return lines
@@ -405,6 +407,54 @@ final class PinSyncTests: XCTestCase {
         XCTAssertEqual(stop.logReason, "pin store restore failed")
         XCTAssertTrue(stop.message.contains(backupsDir.path), "the message names where the backup is")
         XCTAssertEqual(lines.errors, ["Pin sync for 'T' failed: pin store restore failed"])
+        XCTAssertEqual(markers.backup(for: "T"), stop.detail, "the failure is remembered, with the backup folder")
+        XCTAssertNotNil(stop.detail)
+        XCTAssertEqual(lines.problems.last??.contains(backupsDir.path), true, "and the panel keeps a note that names it")
+    }
+
+    /// A target whose restore failed: its IndexedDB log ends in garbage and the backup is gone.
+    private func failedRestore(_ t: Profile, _ s: Profile) throws -> (stop: SwitcherError, damaged: URL) {
+        defer { ClaudePinStore.beforeIndexedDBWrite = nil }
+        let log = ClaudeStoreFixture.idbFolder(t).appendingPathComponent("000003.log")
+        ClaudePinStore.beforeIndexedDBWrite = {
+            let h = try FileHandle(forWritingTo: log); defer { try? h.close() }
+            try h.seekToEnd(); try h.write(contentsOf: Data([1, 2, 3]))
+            try FileManager.default.removeItem(at: self.backupsDir)
+            try FileManager.default.createDirectory(at: self.backupsDir, withIntermediateDirectories: true)
+        }
+        return (try XCTUnwrap(runLaunchSync(t, s).stop), log)
+    }
+
+    func testTheNextLaunchIsRefusedWhileTheStoreDoesNotReadCleanThenGoesOn() throws {
+        let s = try profile("S", chats: ["local_a", "local_b"], pins: ["local_b", "local_a"])
+        let t = try profile("T", chats: ["local_a", "local_b"], pins: ["local_a"])
+        let (first, log) = try failedRestore(t, s)
+        var errors = [String](), notes = [String?]()
+        let refusal = try XCTUnwrap(Switcher.restoreGate(target: t, restoreFailures: markers, problem: { notes.append($1) }, logError: { errors.append($0) }))
+        XCTAssertTrue(refusal.message.contains(first.detail!), "names the backup folder")
+        XCTAssertEqual(errors, ["Launch of 'T' refused: its pin store was not restored after a failed write"], "one fixed line, no paths")
+        XCTAssertNotNil(markers.backup(for: "T"))
+        XCTAssertEqual(notes.last??.contains(first.detail!), true)
+        // The store reads clean again (the garbage is cut off): the marker goes and the launch may continue.
+        let data = try Data(contentsOf: log)
+        try data.dropLast(3).write(to: log)
+        errors = []
+        XCTAssertNil(Switcher.restoreGate(target: t, restoreFailures: markers, problem: { notes.append($1) }, logError: { errors.append($0) }))
+        XCTAssertNil(markers.backup(for: "T"))
+        XCTAssertNil(notes.last!, "the note is cleared")
+        XCTAssertTrue(errors.isEmpty)
+    }
+
+    func testAnAccountWithoutAMarkerIsNeverGated() throws {
+        let t = try profile("T", chats: [], pins: [], lsVersion: "2")   // unusable for pins, but no failed restore
+        XCTAssertNil(Switcher.restoreGate(target: t, restoreFailures: markers, problem: { _, _ in XCTFail() }, logError: { _ in XCTFail() }))
+    }
+
+    func testTheMarkerIsAFileTheOtherProcessSees() throws {
+        markers.set("T", backup: "/x/y")
+        XCTAssertEqual(RestoreFailures(file: home.appendingPathComponent("restore-failed.json")).backup(for: "t"), "/x/y")
+        let mode = try FileManager.default.attributesOfItem(atPath: home.appendingPathComponent("restore-failed.json").path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(mode?.intValue, 0o600)
     }
 
     func testEveryOtherFailureLetsTheLaunchGoOn() throws {

@@ -129,7 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let linking = sw.settings["LinkWorktreeChats"] as? Bool == true
         set(\.linkChats, linking)
         set(\.syncPins, sw.settings.syncPins)
-        set(\.pinSyncProblems, sw.pinSyncProblems.sorted { $0.key < $1.key }.map(\.value))
+        set(\.pinSyncProblems, sw.pinSyncProblems.sorted { $0.key < $1.key }.map { PinSyncNote(id: $0.key, text: $0.value) })
         updateOpenTwiceTimer()
         if sharedChatsModel.linkEnabled != linking { sharedChatsModel.linkEnabled = linking }
         set(\.showRoutingBanner, sw.settings.signInRouting == nil && profiles.count > 1)

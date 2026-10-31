@@ -436,8 +436,8 @@ struct SettingsSection: View {
                                     "Bir hesap açılırken, en son kullandığınız hesapla ortak sohbetlerin pinleri o hesaptaki sırayla gelir."),
                           isOn: Binding(get: { state.syncPins }, set: { state.actions.setSyncPins($0) }))
                 if state.syncPins {
-                    ForEach(state.pinSyncProblems, id: \.self) { problem in
-                        Text(problem)
+                    ForEach(state.pinSyncProblems) { problem in
+                        Text(problem.text)
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

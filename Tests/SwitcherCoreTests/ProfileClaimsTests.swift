@@ -27,6 +27,27 @@ final class ProfileClaimsTests: XCTestCase {
         Profile(id: id, name: id, path: dir.appendingPathComponent(id))
     }
 
+    func testDroppingAStartingClaimOfAnotherOwnerLeavesItInPlace() throws {
+        let owner = make(pid: 100), other = make(pid: 200)
+        XCTAssertEqual(try owner.claimLaunch("Work") { nil }, .go)
+        other.dropStarting("Work")
+        XCTAssertTrue(owner.startedRecently("Work"), "a drop by a non-owner does not remove the claim")
+        owner.dropStarting("Work")
+        XCTAssertFalse(owner.startedRecently("Work"))
+    }
+
+    func testALateOwnersDropDoesNotRemoveANewerWritingClaim() throws {
+        let late = make(pid: 100), newer = make(pid: 200)
+        let p = profile("Work")
+        try late.claimWriting([p]) { _ in false }
+        clock.addTimeInterval(ProfileClaims.writingLimit + 1)   // the first claim has expired
+        try newer.claimWriting([p]) { _ in false }
+        late.dropWriting([p])
+        XCTAssertTrue(newer.isWriting("Work"), "the newer claim is still there")
+        newer.dropWriting([p])
+        XCTAssertFalse(newer.isWriting("Work"))
+    }
+
     func testSecondLaunchWithinTheWindowIsStarting() throws {
         let claims = make()
         XCTAssertEqual(try claims.claimLaunch("Work") { nil }, .go)

@@ -55,4 +55,45 @@ final class SwitcherWritingTests: XCTestCase {
         sw.store.remove = { try FileManager.default.removeItem(at: $0) }  // not the real Trash
         XCTAssertNoThrow(try sw.delete(profile))
     }
+
+    // MARK: Launch refusal after a failed restore, and the panel notes
+
+    func testARefusedLaunchAnswersOnTheMainThreadAndDropsTheClaim() throws {
+        let (sw, profile) = try makeSwitcher()
+        sw.restoreFailures.set(profile.id, backup: "/backup/place")   // the profile has no readable storage at all
+        let done = expectation(description: "completion")
+        var failure: Error?
+        var onMain = false
+        sw.launch(profile) { result in
+            onMain = Thread.isMainThread
+            if case .failure(let e) = result { failure = e }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 10)
+        XCTAssertTrue(onMain)
+        XCTAssertTrue((failure as? SwitcherError)?.message.contains("/backup/place") == true, "names the backup folder")
+        XCTAssertFalse(sw.claims.startedRecently(profile.id), "the starting claim is dropped")
+        XCTAssertNotNil(sw.restoreFailures.backup(for: profile.id), "the marker stays until the store reads clean")
+        XCTAssertTrue(sw.pinSyncProblems[profile.id]?.contains("/backup/place") == true, "and the panel shows it")
+    }
+
+    func testTwoAccountsWithTheSameRefusalGetDistinctNotes() throws {
+        let a = Profile(id: "a", name: "Alpha", path: dir.appendingPathComponent("a"))
+        let b = Profile(id: "b", name: "Beta", path: dir.appendingPathComponent("b"))
+        for reason in ["no pin record yet", "pin store format not recognised", "leveldb read failed", "leveldb compression not supported"] {
+            let e = SwitcherError("generic", logReason: reason)
+            let na = try XCTUnwrap(Switcher.pinSyncNote(for: e, target: a)), nb = try XCTUnwrap(Switcher.pinSyncNote(for: e, target: b))
+            XCTAssertNotEqual(na, nb, reason)
+            XCTAssertTrue(na.contains("Alpha") && nb.contains("Beta"), reason)
+        }
+        // "no pin record yet" arrives with the account's name already in its message.
+        XCTAssertTrue(Switcher.pinSyncNote(for: PinSync.noPinRecord(a), target: a)!.contains("Alpha"))
+    }
+
+    func testANoteOfADeletedProfileIsGone() throws {
+        let (sw, profile) = try makeSwitcher()
+        sw.pinSyncNotes.set(profile.id, "a note")
+        sw.pinSyncNotes.set("gone", "stale note")
+        XCTAssertEqual(sw.pinSyncProblems, [profile.id: "a note"])
+    }
 }

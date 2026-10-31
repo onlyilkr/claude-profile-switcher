@@ -28,6 +28,8 @@ public struct Paths {
     public var errorLog: URL { switcherHome.appendingPathComponent("switcher-error.log") }
     public var pendingSignIn: URL { switcherHome.appendingPathComponent("pending-sign-in.json") }
     public var claimsFile: URL { switcherHome.appendingPathComponent("claims.json") }
+    /// Accounts whose pin store could not be put back after a failed write, with the backup that holds their data.
+    public var restoreFailedFile: URL { switcherHome.appendingPathComponent("restore-failed.json") }
 
     /// Copies of an account's pin databases taken before the switcher writes them, newest five per account.
     public var pinStoreBackups: URL { switcherHome.appendingPathComponent("backups/pinstore", isDirectory: true) }

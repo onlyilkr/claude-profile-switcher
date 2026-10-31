@@ -74,7 +74,8 @@ public final class ProfileClaims {
         let key = id.lowercased()
         try? FileLock.exclusively(lockFile) {
             var claims = load()
-            guard claims[key]?.kind == "starting" else { return }
+            // Only the owner's own claim: after a hang or a pid change the entry may belong to a newer launch.
+            guard let claim = claims[key], claim.kind == "starting", claim.pid == ownPID else { return }
             claims[key] = nil
             try? save(claims)
         }
@@ -107,7 +108,11 @@ public final class ProfileClaims {
     public func dropWriting(_ profiles: [Profile]) {
         try? FileLock.exclusively(lockFile) {
             var claims = load()
-            for p in profiles where claims[p.id.lowercased()]?.kind == "writing" { claims[p.id.lowercased()] = nil }
+            for p in profiles {
+                let key = p.id.lowercased()
+                // Only our own claim: an expired one may since have been replaced by another process's.
+                if let claim = claims[key], claim.kind == "writing", claim.pid == ownPID { claims[key] = nil }
+            }
             try? save(claims)
         }
     }
@@ -127,7 +132,8 @@ public final class ProfileClaims {
         claim.kind == "writing" && now().timeIntervalSince(claim.since) < ProfileClaims.writingLimit && isAlive(claim.pid)
     }
 
-    /// An unreadable file means no claims: a damaged file must never block a launch.
+    /// An unreadable file means no claims. Deliberate: a damaged file must never block a launch or a transfer
+    /// for good, at the price of re-opening the double-launch race until the next write repairs the file.
     private func load() -> [String: Claim] {
         guard let data = try? Data(contentsOf: file) else { return [:] }
         let decoder = JSONDecoder()
