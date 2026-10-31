@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [1.1.1] - 2026-10-29
+## [1.1.1] - 2026-10-31
 
 Fixes for races between the app and the command line, settings that failed silently, and a few
 hand-edited or unexpected files.
@@ -19,10 +19,19 @@ hand-edited or unexpected files.
 - Pin sync and the transfer's pins now show in Claude's sidebar: 1.1.0 wrote a copy Claude ignores. The
   account you used last is the base: its pinned shared chats come first, in its order, then the opened
   account's own pins. A transfer puts the carried pins on top.
+  The switcher writes only while the account is closed and takes a copy first, in
+  `backups/pinstore/<time>/<account>/` (the newest 5 per account are kept). It writes nothing when the pinned
+  chats and their order are already right, and refuses, saying so in the panel, when the account is open,
+  when Claude's storage is in a format the switcher does not know (including a changed compression), or when
+  Claude has not saved a pin there yet (pin one chat there once).
+- If a pin write fails and the copy cannot be put back, that account is not opened, by the app or the command
+  line, until its storage reads cleanly again; the message names the backup folder.
+- New state file `claims.json` in the switcher's folder: who is starting or writing which account, shared by the
+  app and the command line.
 - The app and the command line no longer both start one account in the moment before its window
   appears; launch decisions are shared between them.
 - An account the switcher is copying chats into cannot be opened or deleted until the copy finishes; it
-  says it is being updated. Chat links and pin sync leave such an account alone too.
+  says it is being updated. Chat links (including their own writes) and pin sync leave such an account alone too.
 - Settings that cannot be saved now say so instead of failing silently, and two writers no longer lose
   each other's labels or options.
 - When several accounts wait for a browser sign-in at once, each sign-in goes to the right one

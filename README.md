@@ -424,19 +424,22 @@ account you used last follow that account:
   opened account too. If the other account has no pin list at all, or it cannot be read, nothing is
   changed (nothing is unpinned from missing data).
 - **The copies follow**: the config list and the records' starred flag are updated to match.
-- **Nothing is written when nothing would change.** A run that stopped halfway (list written, some
+- **Nothing is written when nothing would change**: the same pinned chats in the same sidebar order,
+  however Claude happens to order its internal list. A run that stopped halfway (list written, some
   records not) is repaired the next time pins sync into this account.
 
 The switcher writes only while the account is closed, and holds the storage's own lock for the whole
 write; an account that is open or still starting is left alone. Before it writes, it copies the account's
 two storage folders and `claude_desktop_config.json` to `backups/pinstore/<time>/<account>/` in the
 switcher's folder (the newest 5 per account are kept), and it restores them if the write fails or does
-not read back as written. If that restore itself fails, Claude is not started on the account, and the message names the backup folder. A crash between the two writes (Local Storage, then IndexedDB) leaves the backup intact, and the next sync repairs it. The backup folders are private to you (0700) and hold no copy of the storage's lock file. The chat records it changes are backed up beside them first, as before.
+not read back as written. If that restore itself fails, Claude is not started on the account, and the message names the backup folder. The switcher remembers this in `restore-failed.json` in its folder (private to you, shared by the app and the command line), so every later attempt to open that account, from either, is refused with the same message until both of its storage folders read cleanly again (for example after you put the backup back); the panel keeps a line for it until then. Claude is never started on data in that state, so it cannot reset it. Every other field of Claude's stored values is kept (the values are re-encoded as JSON, so spacing, key order and the spelling of numbers can change, not their content). A crash between the two writes (Local Storage, then IndexedDB) leaves the backup intact, and the next sync repairs it. The backup folders are private to you (0700) and hold no copy of the storage's lock file. The chat records it changes are backed up beside them first, as before.
 
 When the storage is not in the format the switcher has seen, nothing is written. The same goes for an
 account where Claude has not saved any pins yet (pin one chat there once). The same goes for storage that cannot be read safely. The panel says which under the **Sync pins across accounts** switch, one line per account, until that account's storage reads fine again (a sync started from the command line is only logged), and the log gets one line with a fixed reason,
 never chat names or file paths. Opening is not blocked by any of this, except when a failed restore leaves the account's data in doubt (above). It happens only when the
-switcher opens an account (the panel, a launcher, or `--launch`); opening Claude.app directly skips it.
+switcher opens an account (the panel, a launcher, or `--launch`); opening Claude.app directly skips it, and
+if that happens while the switcher is writing that account's pins, Claude can fail to open its storage, so
+open accounts through the switcher.
 It is on by default; turn it off with **Sync pins across accounts** in the panel (`SyncPins` in
 `settings.json`).
 
@@ -528,6 +531,7 @@ Claude is closed.
 | Launchers | `~/Applications/Claude - <name>.app` |
 | Claude Code transcripts | `~/.claude/projects`, shared by all accounts |
 | Link list and backups of replaced transcripts | `~/Library/Application Support/Claude Profile Switcher/links.json` and `backups/transcripts/` |
+| Who is starting or writing which account, and accounts whose pin restore failed | `~/Library/Application Support/Claude Profile Switcher/claims.json` and `restore-failed.json` |
 | Backups taken before pins are written | `~/Library/Application Support/Claude Profile Switcher/backups/pinstore/<time>/<account>/`, the newest 5 per account |
 
 A profile's folder name is its permanent id: Claude stores absolute paths inside its data, so
