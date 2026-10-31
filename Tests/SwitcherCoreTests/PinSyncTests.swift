@@ -17,10 +17,10 @@ final class PinSyncTests: XCTestCase {
     /// A profile with both Claude databases (`pins` are the starred chats in sidebar order), the config mirror and one
     /// record per chat. `hasPinRecord: false` leaves the IndexedDB without any pin record.
     func profile(_ id: String, chats: [String], pins: [String], deleted: [String] = [], starred: Set<String>? = nil,
-                 org: String = "org", hasPinRecord: Bool = true, lsVersion: String? = "1") throws -> Profile {
+                 org: String = "org", hasPinRecord: Bool = true, lsVersion: String? = "1", starredIds: [String]? = nil) throws -> Profile {
         let cfg = try JSONSerialization.data(withJSONObject: ["mcpServers": ["x": 1],
                                                               "preferences": ["epitaxyPrefs": ["starred-local-code-sessions": pins, "other": 5]]])
-        let p = try ClaudeStoreFixture.makeProfile(in: home, id: id, name: id, starredIds: hasPinRecord ? pins : nil,
+        let p = try ClaudeStoreFixture.makeProfile(in: home, id: id, name: id, starredIds: hasPinRecord ? (starredIds ?? pins) : nil,
                                                    pinnedOrder: pins.map { "code:" + $0 }, listMirror: pins, lsVersion: lsVersion,
                                                    config: String(decoding: cfg, as: UTF8.self))
         let dir = ChatTransfer.sessionRoot(p).appendingPathComponent("acct").appendingPathComponent(org)
@@ -145,6 +145,14 @@ final class PinSyncTests: XCTestCase {
         let cfg = try JSONSerialization.jsonObject(with: Data(contentsOf: ChatTransfer.configFile(t))) as! [String: Any]
         XCTAssertNotNil(cfg["mcpServers"], "other config keys kept")
         XCTAssertNil(try PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change, "and nothing is left to do")
+    }
+
+    func testStarredIdsInAnotherOrderThanTheSidebarIsNoChange() throws {
+        let s = try profile("S", chats: ["local_a", "local_b"], pins: ["local_b", "local_a"])
+        // A drag in Claude reorders pinnedOrder only: starredIds keeps its old order.
+        let t = try profile("T", chats: ["local_a", "local_b"], pins: ["local_b", "local_a"], starredIds: ["local_a", "local_b"])
+        guard case .noChange = try PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }) else { return XCTFail("expected noChange") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backupsDir.path))
     }
 
     func testNothingToChangeIsNoChange() throws {
@@ -413,6 +421,8 @@ final class PinSyncTests: XCTestCase {
             XCTAssertEqual(Switcher.pinSyncNote(for: SwitcherError("x", logReason: reason), target: t),
                            "Claude's pin storage in 'T' could not be read safely, so pins were not synced there.", reason)
         }
+        XCTAssertEqual(Switcher.pinSyncNote(for: SwitcherError("x", logReason: "leveldb compression not supported"), target: t),
+                       "Claude's storage format in 'T' has changed, so pins were not synced there. Update the switcher to a newer version.")
         for reason in ["store is locked", "leveldb several live logs", "pin store write failed", "profile is open"] {
             XCTAssertNil(Switcher.pinSyncNote(for: SwitcherError("x", logReason: reason), target: t), reason)
         }

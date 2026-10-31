@@ -86,7 +86,7 @@ public enum PinSync {
         let star = list.filter { shared.contains($0) && states[$0]?.contains(false) == true }
         let unstar = shared.filter { !after.contains($0) && states[$0]?.contains(true) == true }.sorted()
 
-        if list == targetPins.sidebar && targetPins.starred == list && star.isEmpty && unstar.isEmpty { return .noChange }
+        if targetPins.matches(list) && star.isEmpty && unstar.isEmpty { return .noChange }
         return .change(PinSyncPlan(source: source.id, newPins: list, star: star, unstar: unstar, seen: targetPins))
     }
 

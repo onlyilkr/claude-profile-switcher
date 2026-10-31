@@ -227,6 +227,8 @@ struct LevelDBReader {
         switch type {
         case 0: return contents
         case 1: return try Snappy.decompress(contents)
+        // A format change (Chromium can switch table blocks to Zstd) gets its own reason, so the user is told to update.
+        case 2: throw SwitcherError("Claude's local data uses a storage compression this version does not support.", logReason: "leveldb compression not supported")
         default: throw fail()
         }
     }

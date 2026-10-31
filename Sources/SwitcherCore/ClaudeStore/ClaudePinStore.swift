@@ -18,6 +18,12 @@ struct ClaudePins: Equatable {
         }
         return out + starred.filter { !seen.contains($0) }.sorted()
     }
+
+    /// Already what `wanted` asks for: the same pinned chats and the same sidebar order. The order of `starredIds`
+    /// itself is not shown anywhere (a drag in Claude reorders only `pinnedOrder`), so it never makes a write necessary.
+    func matches(_ wanted: [String]) -> Bool {
+        sidebar == wanted && Set(starred) == Set(wanted)
+    }
 }
 
 /// Reads and writes the pin store of one account: pins in IndexedDB, sidebar order in Local Storage.
@@ -63,12 +69,12 @@ enum ClaudePinStore {
 
         // Unlocked pre-check, so an account that is already right (or unusable) never needs the locks.
         let first = try load(profile)
-        if first.pins.sidebar == wanted && first.pins.starred == wanted { return false }
+        if first.pins.matches(wanted) { return false }
 
         return try LevelDBLock.withExclusive(lsFolder(profile)) {
             try LevelDBLock.withExclusive(idbFolder(profile)) {
                 let state = try load(profile)   // the data to change comes from the locked read
-                if state.pins.sidebar == wanted && state.pins.starred == wanted { return false }
+                if state.pins.matches(wanted) { return false }
                 let plan = try plan(wanted, state, now: now)
                 let backup = try backUp(profile, backups: backups, now: now)
                 do {
@@ -237,7 +243,9 @@ enum ClaudePinStore {
                 }
             }
             let config = profile.path.appendingPathComponent("claude_desktop_config.json")
-            if fm.fileExists(atPath: config.path) { try fm.copyItem(at: config, to: dest.appendingPathComponent(config.lastPathComponent)) }
+            // The file behind a symlink (a config shared between accounts), so the backup holds the content, not the link.
+            let realConfig = config.resolvingSymlinksInPath()
+            if fm.fileExists(atPath: realConfig.path) { try fm.copyItem(at: realConfig, to: dest.appendingPathComponent(config.lastPathComponent)) }
         } catch {
             try? fm.removeItem(at: dest)
             let stampDir = dest.deletingLastPathComponent()

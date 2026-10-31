@@ -186,8 +186,14 @@ public final class Switcher {
     /// The panel note for a refusal that will repeat until the user acts; nil for anything that may pass by itself.
     static func pinSyncNote(for error: SwitcherError, target: Profile) -> String? {
         switch error.logReason {
-        case "no pin record yet", "pin store format not recognised":
-            return error.message
+        case "no pin record yet":
+            return error.message   // names the account already
+        case "pin store format not recognised":
+            return L("Claude stores pins in '\(target.name)' in a way the switcher does not recognise, so pins were not synced there.",
+                     "Claude '\(target.name)' hesabında pinleri switcher'ın tanımadığı bir biçimde saklıyor, bu yüzden pinler orada eşitlenmedi.")
+        case "leveldb compression not supported":
+            return L("Claude's storage format in '\(target.name)' has changed, so pins were not synced there. Update the switcher to a newer version.",
+                     "'\(target.name)' hesabındaki Claude depolama biçimi değişmiş, bu yüzden pinler orada eşitlenmedi. Switcher'ı güncelleyin.")
         case "leveldb read failed", "leveldb log not clean", "leveldb lock missing", "leveldb current log missing":
             let name = target.name
             return L("Claude's pin storage in '\(name)' could not be read safely, so pins were not synced there.",

@@ -40,6 +40,14 @@ final class LevelDBReaderTests: XCTestCase {
         XCTAssertEqual(try LevelDBReader(folder: folder).newest(k)?.value, v)
     }
 
+    func testUnsupportedBlockCompressionHasItsOwnReason() throws {
+        try fx.writeTable(number: 5, records: [R(d("k"), d("v"), seq: 2)], compression: .zstd)
+        try fx.writeManifest(logNumber: 8, lastSequence: 2, liveTables: [5])
+        XCTAssertThrowsError(try LevelDBReader(folder: folder).newest(d("k"))) {
+            XCTAssertEqual(($0 as? SwitcherError)?.logReason, "leveldb compression not supported")
+        }
+    }
+
     func testPrefixCompressedKeysAcrossBlocksAreRead() throws {
         let records = (0..<50).map { R(d(String(format: "key-%03d", $0)), d("v\($0)"), seq: UInt64($0 + 1)) }
         try fx.writeTable(number: 5, records: records, entriesPerBlock: 7)

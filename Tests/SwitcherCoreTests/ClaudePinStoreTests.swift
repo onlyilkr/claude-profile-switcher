@@ -101,17 +101,22 @@ final class ClaudePinStoreTests: XCTestCase {
     }
 
     func testNoOpWritesNothingAndTakesNoBackup() throws {
-        let p = try make(order: ["code:local_b"], mirror: ["local_b", "local_a"])
+        // starredIds is [a, b] but the sidebar (pinnedOrder) is [b, a]: the pin set and the shown order are right already.
+        let p = try make(order: ["code:local_b", "code:local_a"], mirror: ["local_b", "local_a"])
         let current = try XCTUnwrap(ClaudePinStore.read(p, tolerateTornTail: false))
+        XCTAssertEqual(current.starred, ["local_a", "local_b"])
         XCTAssertEqual(current.sidebar, ["local_b", "local_a"])
-        // starredIds is ["local_a","local_b"], so only an exact match of both is a no-op.
-        XCTAssertTrue(try ClaudePinStore.write(["local_b", "local_a"], to: p, backups: backups, now: now))
         let before = try ClaudeStoreFixture.snapshot(p.path)
-        let count = backupCount()
         XCTAssertFalse(try ClaudePinStore.write(["local_b", "local_a"], to: p, backups: backups, now: now))
         XCTAssertEqual(try ClaudeStoreFixture.snapshot(p.path), before)
-        XCTAssertEqual(backupCount(), count)
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: backups.path).count, 1)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: backups.path).isEmpty)
+    }
+
+    func testAWriteStillStoresStarredIdsInWantedOrder() throws {
+        let p = try make(order: ["code:local_b", "code:local_a"])
+        XCTAssertTrue(try ClaudePinStore.write(["local_a", "local_b"], to: p, backups: backups, now: now))
+        XCTAssertEqual(try ClaudePinStore.read(p, tolerateTornTail: false)?.starred, ["local_a", "local_b"])
+        XCTAssertEqual(try ClaudePinStore.read(p, tolerateTornTail: false)?.sidebar, ["local_a", "local_b"])
     }
 
     func testNoOpFirstWriteLeavesBackupsEmpty() throws {
@@ -234,6 +239,44 @@ final class ClaudePinStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("claude_desktop_config.json").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("IndexedDB/https_claude.ai_0.indexeddb.leveldb/000003.log").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("Local Storage/leveldb/000003.log").path))
+    }
+
+    func testBackupOfASymlinkedConfigHoldsTheContent() throws {
+        let p = try make()
+        let real = root.appendingPathComponent("shared-config.json")
+        try Data("{\"shared\":true}".utf8).write(to: real)
+        let link = ClaudeStoreFixture.configFile(p)
+        try? FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        XCTAssertTrue(try ClaudePinStore.write(["local_z"], to: p, backups: backups, now: now))
+        let stamp = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: backups.path).first)
+        let copy = backups.appendingPathComponent(stamp).appendingPathComponent("p1/claude_desktop_config.json")
+        let values = try copy.resourceValues(forKeys: [.isSymbolicLinkKey])
+        XCTAssertNotEqual(values.isSymbolicLink, true, "the backup holds the file, not the link")
+        XCTAssertEqual(try Data(contentsOf: copy), Data("{\"shared\":true}".utf8))
+    }
+
+    func testOtherFieldsKeepTheirValuesAfterAWrite() throws {
+        let p = try make(order: [])
+        // Floats, large ints, nested arrays and extra keys in the store record (written by hand, as Claude would).
+        let raw = #"{"state":{"pinnedOrder":[],"theme":"dark","ratio":0.25,"big":9007199254740993,"nested":[[1,2.5],["x",{"k":[true,null]}]],"neg":-3},"version":2,"shared":false,"extra":{"a":[1,[2,[3]]],"f":1.0}}"#
+        try rewriteStore(p, raw)
+        let before = try lsJSON(p, "dframe-store")
+        XCTAssertTrue(try ClaudePinStore.write(["local_b", "local_a"], to: p, backups: backups, now: now))
+        var after = try lsJSON(p, "dframe-store")
+        var expected = before
+        var state = try XCTUnwrap(after["state"] as? [String: Any])
+        XCTAssertEqual(state["pinnedOrder"] as? [String], ["code:local_b", "code:local_a"])
+        state["pinnedOrder"] = nil
+        var beforeState = try XCTUnwrap(expected["state"] as? [String: Any])
+        beforeState["pinnedOrder"] = nil
+        after["state"] = state; expected["state"] = beforeState
+        XCTAssertTrue(NSDictionary(dictionary: after).isEqual(to: expected), "every other field keeps its value (semantic equality)")
+    }
+
+    private func rewriteStore(_ p: Profile, _ json: String) throws {
+        let ls = LevelDBWriter(folder: ClaudeStoreFixture.lsFolder(p))
+        try LevelDBLock.withExclusive(ClaudeStoreFixture.lsFolder(p)) { _ = try ls.append([(LocalStorageCodec.key("dframe-store"), LocalStorageCodec.encode(json))]) }
     }
 
     func testKeepsFiveBackupsPerProfile() throws {

@@ -332,6 +332,17 @@ final class ChatTransferTests: XCTestCase {
 
     var pinBackups: URL { home.appendingPathComponent("backups/pinstore") }
 
+    func testCarryingPinsThatAreAlreadyThereWritesNothing() throws {
+        let src = try storeProfile("S", pins: ["local_b", "local_a"])
+        let dst = try ClaudeStoreFixture.makeProfile(in: home, id: "T", name: "T", starredIds: ["local_a", "local_b"],
+                                                     pinnedOrder: ["code:local_b", "code:local_a"], listMirror: ["local_b", "local_a"])
+        let dbs = [dst.path.appendingPathComponent("IndexedDB"), dst.path.appendingPathComponent("Local Storage")]
+        let before = try dbs.map { try ClaudeStoreFixture.snapshot($0) }
+        _ = try transfer.carryPins(of: sessionsNamed(["a", "b"]), from: src, to: dst, backups: pinBackups, logError: { _ in })
+        XCTAssertEqual(try dbs.map { try ClaudeStoreFixture.snapshot($0) }, before, "same pins, same sidebar order: no write however starredIds is ordered")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pinBackups.path))
+    }
+
     func testCarriedPinsGoOnTopInSourceOrder() throws {
         let src = try storeProfile("S", pins: ["local_b", "local_a", "local_d"])   // d is not copied
         let dst = try storeProfile("T", pins: ["local_x", "local_a"])

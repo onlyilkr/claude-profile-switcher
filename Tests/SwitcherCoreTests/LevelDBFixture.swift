@@ -16,7 +16,8 @@ struct LevelDBFixture {
         var sequence: UInt64
         var ops: [(key: Data, value: Data?)]
     }
-    enum Compression { case none, snappy }
+    /// `zstd` only sets the block type byte (2) over uncompressed bytes: a stand-in for a compression the reader must refuse.
+    enum Compression { case none, snappy, zstd }
 
     let folder: URL
 
@@ -142,7 +143,7 @@ struct LevelDBFixture {
     /// Appends contents + compression type + masked CRC; returns the block handle (offset, size varints).
     static func appendBlock(_ contents: [UInt8], to file: inout [UInt8], _ compression: Compression) -> [UInt8] {
         let stored = compression == .snappy ? snappyLiteral(contents) : contents
-        let type: UInt8 = compression == .snappy ? 1 : 0
+        let type: UInt8 = compression == .snappy ? 1 : (compression == .zstd ? 2 : 0)
         let handle = varint(UInt64(file.count)) + varint(UInt64(stored.count))
         let crc = CRC32C.masked(CRC32C.checksum([type], seed: CRC32C.checksum(stored)))
         file += stored + [type] + le(UInt64(crc), 4)
