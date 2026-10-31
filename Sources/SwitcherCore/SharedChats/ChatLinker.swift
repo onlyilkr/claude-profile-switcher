@@ -28,15 +28,29 @@ public struct ChatLinker {
     private let ledger: LinksLedger
     private let live: Live
     private let openFolders: () -> [URL]
+    private let claim: Claim
 
-    public init(paths: Paths, ledger: LinksLedger, live: @escaping Live = ProcessScanner.liveCLISessions, openFolders: @escaping () -> [URL]) {
-        self.paths = paths; self.ledger = ledger; self.live = live; self.openFolders = openFolders
+    /// Claims accounts for writing and returns what releases them; throws when one is open, starting or being written.
+    /// The app and the command line pass `Switcher.claimForWriting`, so no launch starts an account mid-write.
+    public typealias Claim = ([Profile]) throws -> () -> Void
+
+    public init(paths: Paths, ledger: LinksLedger, live: @escaping Live = ProcessScanner.liveCLISessions, openFolders: @escaping () -> [URL],
+                claim: @escaping Claim = { _ in {} }) {
+        self.paths = paths; self.ledger = ledger; self.live = live; self.openFolders = openFolders; self.claim = claim
     }
 
     // MARK: Helpers
 
     private func isOpen(_ profile: Profile) -> Bool {
         openFolders().contains { ProfileStore.sameItem($0, profile.path) }
+    }
+
+    /// Runs `body` with the account claimed for writing, so it cannot be opened meanwhile. The claim counts as
+    /// "open" to `isOpen`, so callers check that first.
+    private func writing<T>(_ profile: Profile, _ body: () throws -> T) throws -> T {
+        let release = try claim([profile])
+        defer { release() }
+        return try body()
     }
 
     private static func norm(_ path: String) -> String {
@@ -188,13 +202,16 @@ public struct ChatLinker {
             if isOpen(plan.profile) {
                 report.skipped[plan.profile.id] = L("Claude is open in this account. Quit it and try again.", "Bu hesapta Claude açık. Kapatıp tekrar deneyin."); continue
             }
-            if live().contains(where: { $0.cliSessionID == chat.cliSessionID }) {
-                report.skipped[plan.profile.id] = L("This chat is still running in Claude. Quit Claude in every account and try again.",
-                                                    "Bu sohbet Claude'da hâlâ çalışıyor. Tüm hesaplarda Claude'u kapatıp tekrar deneyin."); continue
-            }
             do {
-                try backUpWorktreeList(of: plan.profile, stamp: stamp)
-                try apply(plan, chat: chat, win: win, winnerRaw: winnerRaw, winnerEntry: winnerEntry)
+                // Claimed from the last open check to the end of its write; the live check runs under the claim.
+                try writing(plan.profile) {
+                    if live().contains(where: { $0.cliSessionID == chat.cliSessionID }) {
+                        throw SwitcherError(L("This chat is still running in Claude. Quit Claude in every account and try again.",
+                                              "Bu sohbet Claude'da hâlâ çalışıyor. Tüm hesaplarda Claude'u kapatıp tekrar deneyin."))
+                    }
+                    try backUpWorktreeList(of: plan.profile, stamp: stamp)
+                    try apply(plan, chat: chat, win: win, winnerRaw: winnerRaw, winnerEntry: winnerEntry)
+                }
                 report.linked.append(plan.profile.id)
                 written.append(plan)
             } catch {
@@ -370,10 +387,12 @@ public struct ChatLinker {
             if NSDictionary(dictionary: root).isEqual(to: original) { return nil }
             try ledger.ensureReadable()
             let records = diff(profile: to, session: id, before: original, after: root, released: [], added: entry.name)
-            if !records.isEmpty { try ledger.append(records) }
-            do { try WorktreeLeases.write(root, basedOn: original, to: to) } catch {
-                try? ledger.remove(where: { records.contains($0) })
-                throw error
+            try writing(to) {
+                if !records.isEmpty { try ledger.append(records) }
+                do { try WorktreeLeases.write(root, basedOn: original, to: to) } catch {
+                    try? ledger.remove(where: { records.contains($0) })
+                    throw error
+                }
             }
             return nil
         } catch {
@@ -406,7 +425,7 @@ public struct ChatLinker {
             var root = original
             root["worktrees"] = wts
             do {
-                try WorktreeLeases.write(root, basedOn: original, to: profile)
+                try writing(profile) { try WorktreeLeases.write(root, basedOn: original, to: profile) }
                 report.removed += 1
                 handled.append(record)
             } catch {

@@ -98,6 +98,59 @@ final class ChatLinkerTests: XCTestCase {
         return (e.allObjects as? [String]) ?? []
     }
 
+    // MARK: writing claims
+
+    private func claimsFile() -> ProfileClaims { ProfileClaims(file: paths.claimsFile, ownPID: getpid()) }
+
+    private func claimingLinker(live: @escaping Live = { [] }) -> ChatLinker {
+        let claims = claimsFile()
+        return ChatLinker(paths: paths, ledger: ledger(), live: live, openFolders: { [] },
+                          claim: { profiles in
+                              try claims.claimWriting(profiles) { _ in false }
+                              return { claims.dropWriting(profiles) }
+                          })
+    }
+
+    typealias Live = ChatLinker.Live
+
+    func testWhileALinkWritesAnAccountItsLaunchIsRefusedAsBeingUpdated() throws {
+        try diverged()
+        let claims = claimsFile()
+        var decisions: [ProfileClaims.LaunchDecision] = []
+        // The live check runs under the account's claim: look at what a launch would be told right then.
+        let report = try claimingLinker(live: {
+            if claims.isWriting(self.lose.id) { decisions.append((try? ProfileClaims(file: self.paths.claimsFile, ownPID: getppid()).claimLaunch(self.lose.id) { nil }) ?? .go) }
+            return []
+        }).link(try chat(), winner: "Default", profiles: [win, lose])
+        XCTAssertEqual(report.linked, ["Two"])
+        XCTAssertEqual(decisions, [.writing], "a launch during the write is told the account is being updated")
+        XCTAssertFalse(claims.isWriting(lose.id), "dropped afterwards")
+        XCTAssertEqual(try ProfileClaims(file: paths.claimsFile, ownPID: getppid()).claimLaunch(lose.id) { nil }, .go)
+    }
+
+    func testALinkSkipsAnAccountThatIsStartingAndWritesNothingThere() throws {
+        try diverged()
+        let before = try Data(contentsOf: recordURL(lose))
+        _ = try ProfileClaims(file: paths.claimsFile, ownPID: getppid()).claimLaunch(lose.id) { nil }   // another process is starting it
+        let report = try claimingLinker().link(try chat(), winner: "Default", profiles: [win, lose])
+        XCTAssertTrue(report.linked.isEmpty)
+        XCTAssertNotNil(report.skipped["Two"])
+        XCTAssertEqual(try Data(contentsOf: recordURL(lose)), before)
+    }
+
+    func testBindOnTransferAndUnlinkClaimTheAccountTheyWrite() throws {
+        try writeJSON(leaseFile(["wt-win": lease(winCwd, name: "wt-win", by: chatID)]), WorktreeLeases.file(win))
+        try writeJSON(leaseFile([:]), WorktreeLeases.file(lose))
+        _ = try ProfileClaims(file: paths.claimsFile, ownPID: getppid()).claimLaunch(lose.id) { nil }   // starting elsewhere
+        XCTAssertNotNil(claimingLinker().bindOnTransfer(session: session(worktree: winCwd), from: win, to: lose), "refused while it starts")
+        XCTAssertTrue(try worktrees(lose).isEmpty)
+        ProfileClaims(file: paths.claimsFile, ownPID: getppid()).dropStarting(lose.id)
+        XCTAssertNil(claimingLinker().bindOnTransfer(session: session(worktree: winCwd), from: win, to: lose))
+        XCTAssertFalse(claimsFile().isWriting(lose.id), "the claim is dropped after the write")
+        XCTAssertEqual(claimingLinker().unlink(sessionID: nil, profiles: [win, lose]).removed, 1)
+        XCTAssertFalse(claimsFile().isWriting(lose.id))
+    }
+
     // MARK: link
 
     func testLinkRepointsLoserRecordAndKeepsArchiveAndStar() throws {

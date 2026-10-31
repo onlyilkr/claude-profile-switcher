@@ -343,6 +343,18 @@ final class ChatTransferTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: pinBackups.path))
     }
 
+    func testCarryingPinsLogsEachMirrorFailureOnceWithAFixedReason() throws {
+        let src = try storeProfile("S", pins: ["local_secret"])
+        let dst = try storeProfile("T", pins: [], config: "this is not json")   // the config mirror cannot be written
+        let dir = ChatTransfer.sessionRoot(dst).appendingPathComponent("acct/org")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("not json".utf8).write(to: dir.appendingPathComponent("local_secret.json"))   // the record mirror cannot be written
+        var logged = [String]()
+        XCTAssertEqual(try transfer.carryPins(of: sessionsNamed(["secret"]), from: src, to: dst, backups: pinBackups, logError: { logged.append($0) }), 1)
+        XCTAssertEqual(logged, ["Pins for 'T': config mirror not updated", "Pins for 'T': 1 record mirror(s) not updated"], "no ids, titles or paths")
+        XCTAssertEqual(try ClaudePinStore.read(dst, tolerateTornTail: false)?.sidebar, ["local_secret"], "the store itself was written")
+    }
+
     func testCarriedPinsGoOnTopInSourceOrder() throws {
         let src = try storeProfile("S", pins: ["local_b", "local_a", "local_d"])   // d is not copied
         let dst = try storeProfile("T", pins: ["local_x", "local_a"])

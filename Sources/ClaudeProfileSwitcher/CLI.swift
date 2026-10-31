@@ -207,7 +207,7 @@ enum CLI {
     static func unlinkChats(_ sw: Switcher) -> Int32 {
         let ledger = LinksLedger(file: sw.paths.switcherHome.appendingPathComponent("links.json"))
         do { try ledger.ensureReadable() } catch { return fail(error.localizedDescription) }
-        let linker = ChatLinker(paths: sw.paths, ledger: ledger, openFolders: { sw.openFolders() })
+        let linker = ChatLinker(paths: sw.paths, ledger: ledger, openFolders: { sw.openFolders() }, claim: { try sw.claimForWriting($0) })
         let report = linker.unlink(sessionID: nil, profiles: sw.store.list(status: false))
         print("Removed \(report.removed) link(s).")
         for item in report.skipped { print("Skipped: \(item)") }

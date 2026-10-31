@@ -275,9 +275,15 @@ public final class Switcher {
     /// Runs `body` with every profile claimed for writing, so no launch (here or from the command line) starts one
     /// meanwhile. Throws when one is open, starting or already being written.
     public func whileWriting<T>(_ profiles: [Profile], _ body: () throws -> T) throws -> T {
-        try claims.claimWriting(profiles) { self.store.isRunning($0) != nil || self.claims.startedRecently($0.id) }
-        defer { claims.dropWriting(profiles) }
+        let release = try claimForWriting(profiles)
+        defer { release() }
         return try body()
+    }
+
+    /// Claims the profiles for writing (see `whileWriting`) and returns what drops the claim.
+    public func claimForWriting(_ profiles: [Profile]) throws -> () -> Void {
+        try claims.claimWriting(profiles) { self.store.isRunning($0) != nil || self.claims.startedRecently($0.id) }
+        return { self.claims.dropWriting(profiles) }
     }
 
     /// The profile's folder, then its ProfileArgs without any data folder switch of their

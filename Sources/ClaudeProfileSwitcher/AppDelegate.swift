@@ -311,7 +311,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func makeLinker(_ sw: Switcher) -> ChatLinker {
-        ChatLinker(paths: sw.paths, ledger: ledger(sw), openFolders: { sw.openFolders() })
+        ChatLinker(paths: sw.paths, ledger: ledger(sw), openFolders: { sw.openFolders() }, claim: { try sw.claimForWriting($0) })
     }
 
     /// Claude moved a linked chat again: the way linking works has changed, so linking goes off.

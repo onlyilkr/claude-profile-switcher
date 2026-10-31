@@ -239,8 +239,13 @@ public struct ChatTransfer {
         let list = carried + targetPins.sidebar.filter { !seen.contains($0) }
         _ = try ClaudePinStore.write(list, to: target, backups: backups)
 
-        if pins(of: target) != list { try? writePins(list, to: target, openFolders: openFolders) }
-        _ = setStarred(true, ids: carried, in: target)
+        // Mirror failures never fail the carry, but they are not silent: fixed reasons, as in PinSync.apply.
+        if pins(of: target) != list {
+            do { try writePins(list, to: target, openFolders: openFolders) }
+            catch { logError("Pins for '\(target.name)': config mirror not updated") }
+        }
+        let failed = setStarred(true, ids: carried, in: target)
+        if failed > 0 { logError("Pins for '\(target.name)': \(failed) record mirror(s) not updated") }
         return carried.count
     }
 
