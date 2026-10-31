@@ -13,22 +13,15 @@ public final class Switcher {
     public let launchers: Launchers
     public let transfer: ChatTransfer
 
-    /// Launches this process started that have not shown up as a process yet. Starting a
-    /// profile twice in that window would put two copies on one folder.
-    /// Read from background threads too (the linker's open-folder check runs off the main thread), so
-    /// every access goes through `startingLock`; a main-thread snapshot would miss launches made during a long link.
-    private var starting: [String: Date] = [:]
-    private let startingLock = NSLock()
+    /// Launches that were started but may not show up as a process yet, shared with the command line through a file.
+    /// Starting a profile twice in that window would put two copies on one folder.
+    public let claims: ProfileClaims
 
-    private func setStarting(_ id: String, _ date: Date?) {
-        startingLock.lock(); defer { startingLock.unlock() }
-        starting[id] = date
-    }
-
-    private func startedAt(_ id: String) -> Date? {
-        startingLock.lock(); defer { startingLock.unlock() }
-        return starting[id]
-    }
+    /// Per profile id, why its last pin sync was refused in a way the user can act on (no pin record yet, or Claude's
+    /// pin storage is in a form the switcher does not recognise or cannot read safely). A note goes away once that
+    /// profile's pin storage was read again without trouble. Read from the main thread, set from wherever the launch runs.
+    public var pinSyncProblems: [String: String] { pinSyncNotes.all }
+    private let pinSyncNotes = PinSyncNotes()
 
     public init(paths: Paths = Paths(), ownBundleID: String? = nil, claudePath: String? = nil) throws {
         self.paths = paths
@@ -38,10 +31,15 @@ public final class Switcher {
         self.pending = PendingSignIn(file: paths.pendingSignIn)
         self.launchers = Launchers(dir: paths.launcherDir, ownBundleID: self.ownBundleID)
         self.transfer = ChatTransfer(transcriptsRoot: paths.transcriptsRoot)
+        self.claims = ProfileClaims(file: paths.claimsFile)
         let defaultFolder = paths.defaultProfile
         // By bundle id, so any copy of Claude counts, wherever it was started from.
         self.store = ProfileStore(paths: paths, settings: settings) {
             ProfileStore.runningMap(bundleID: ClaudeApp.bundleID, defaultFolder: defaultFolder)
+        }
+        if claudePath == nil, let saved = settings.claudePath, !saved.isEmpty,
+           URL(fileURLWithPath: (saved as NSString).expandingTildeInPath).standardizedFileURL.path != claude.url.standardizedFileURL.path {
+            log("ClaudePath in settings.json is not a usable Claude app; using the one macOS knows.")
         }
     }
 
@@ -66,23 +64,48 @@ public final class Switcher {
     public func launch(_ target: Profile, link: String? = nil, expectSignIn: Bool = true,
                        completion: ((Result<LaunchResult, Error>) -> Void)? = nil) {
         refreshClaude()
-        if let pid = store.isRunning(target) {
-            setStarting(target.id, nil)
+        if !target.isDefault {
+            do {
+                try FileManager.default.createDirectory(at: target.path, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            } catch {
+                completion?(.failure(error))
+                return
+            }
+        }
+        // One decision for the whole machine: the running check and the claim happen under one lock.
+        let decision: ProfileClaims.LaunchDecision
+        do {
+            decision = try claims.claimLaunch(target.id) { store.isRunning(target) }
+        } catch {
+            completion?(.failure(error))
+            return
+        }
+        switch decision {
+        case .running(let pid):
+            claims.dropStarting(target.id)
             if let link { send(link, to: pid) }
             Focus.bring(pid: pid)
             completion?(.success(.focused))
             return
-        }
-        if isStarting(target) {
+        case .starting:
             if let link { whenRunning(target) { self.send(link, to: $0) } }
             completion?(.success(.starting))
             return
+        case .writing:
+            completion?(.failure(SwitcherError(L("'\(target.name)' is being updated by the switcher. Try again in a moment.",
+                                                 "'\(target.name)' switcher tarafından güncelleniyor. Birazdan tekrar deneyin."))))
+            return
+        case .go:
+            break
         }
-        if !target.isDefault {
-            try? FileManager.default.createDirectory(at: target.path, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            // A profile that is not signed in yet is about to be: its sign-in is the one to expect.
-            if expectSignIn, routingOn, SignInState.signedIn(profileDir: target.path) != true { pending.set(target.id) }
+        // A failed restore leaves the account's data in doubt: Claude must not start on it.
+        if let stop = syncPinsBeforeLaunch(target) {
+            claims.dropStarting(target.id)
+            completion?(.failure(stop))
+            return
         }
+        // A profile that is not signed in yet is about to be: its sign-in is the one to expect.
+        if expectSignIn, routingOn, SignInState.signedIn(profileDir: target.path) != true { pending.set(target.id) }
 
         let config = NSWorkspace.OpenConfiguration()
         // Always a new copy: with any Claude already running, Launch Services would
@@ -94,13 +117,10 @@ public final class Switcher {
         let env = settings.profileEnv(target.id)
         if !env.isEmpty { config.environment = env }
 
-        syncPinsBeforeLaunch(target)
-
-        setStarting(target.id, Date())
         let done: (NSRunningApplication?, Error?) -> Void = { _, error in
             DispatchQueue.main.async {
                 if let error {
-                    self.setStarting(target.id, nil)
+                    self.claims.dropStarting(target.id)
                     completion?(.failure(error))
                 } else {
                     completion?(.success(.started))
@@ -115,48 +135,86 @@ public final class Switcher {
     }
 
     /// Before an account opens: its pins for chats it shares follow the account used last.
-    /// Never blocks the launch; a failure is logged (no chat ids or titles) and the launch goes on.
-    private func syncPinsBeforeLaunch(_ target: Profile) {
-        guard settings.syncPins else { return }
+    /// A failure is logged (no chat ids or titles) and the launch goes on, except a failed restore, which is returned.
+    /// The starting claim counts as fresh for as long as the sync runs, so a second launch cannot slip in.
+    private func syncPinsBeforeLaunch(_ target: Profile) -> SwitcherError? {
+        guard settings.syncPins else { return nil }
+        claims.setSyncing(target.id, true)
+        defer { claims.setSyncing(target.id, false) }
         let profiles = store.list(status: true)
-        let open = profiles.filter { $0.isRunning || isStarting($0) }.map(\.path)
-        Switcher.syncPinsBeforeLaunch(target: target, among: profiles, openFolders: open, enabled: true, transfer: transfer,
-                                      lastUsed: { ProfileStore.lastUsed($0.path) },
+        // The target holds its own starting claim by now; it counts as open only when it is really running.
+        let open = profiles.filter { $0.isRunning || ($0.id != target.id && isStarting($0)) }.map(\.path)
+        return Switcher.syncPinsBeforeLaunch(target: target, among: profiles, openFolders: open, enabled: true, transfer: transfer,
+                                      backups: paths.pinStoreBackups, lastUsed: { ProfileStore.lastUsed($0.path) },
+                                      problem: { self.pinSyncNotes.set($0, $1) },
                                       log: { self.log($0) }, logError: { self.logError($0) })
     }
 
     /// The part of the launch that is testable without Claude. `openFolders` are the running and
-    /// starting profiles; a target among them is left alone.
+    /// starting profiles; a target among them is left alone. `problem` gets the target's id and its note (nil clears it).
+    /// Returns the error that must stop the launch (a restore that failed), nil otherwise.
     static func syncPinsBeforeLaunch(target: Profile, among: [Profile], openFolders: [URL], enabled: Bool, transfer: ChatTransfer,
-                                     lastUsed: (Profile) -> Date?, log: (String) -> Void, logError: (String) -> Void) {
-        guard enabled else { return }
-        let key = { (url: URL) in url.resolvingSymlinksInPath().standardizedFileURL.path }
-        if openFolders.contains(where: { key($0) == key(target.path) }) { return }
+                                     backups: URL, lastUsed: (Profile) -> Date?, problem: (String, String?) -> Void, log: (String) -> Void,
+                                     logError: (String) -> Void) -> SwitcherError? {
+        guard enabled else { return nil }
+        if openFolders.contains(where: { ProfileStore.sameItem($0, target.path) }) { return nil }
         let targetIDs = transfer.chatIDs(in: target)
-        guard let source = PinSync.source(for: target, among: among, lastUsed: lastUsed, transfer: transfer, targetIDs: targetIDs) else { return }
+        guard let source = PinSync.source(for: target, among: among, lastUsed: lastUsed, transfer: transfer, targetIDs: targetIDs) else { return nil }
         do {
-            guard let plan = PinSync.plan(target: target, source: source, transfer: transfer, targetIDs: targetIDs) else { return }
-            try PinSync.apply(plan, to: target, transfer: transfer, openFolders: openFolders)
-            let pinned = plan.newPins.filter { !plan.seenPins.contains($0) }.count, unpinned = plan.seenPins.filter { !plan.newPins.contains($0) }.count
+            // The note is cleared only once the target was actually read.
+            let outcome = try PinSync.plan(target: target, source: source, transfer: transfer, targetIDs: targetIDs, logError: logError)
+            let plan: PinSyncPlan
+            switch outcome {
+            case .skipped: return nil
+            case .noChange: problem(target.id, nil); return nil
+            case .change(let p): plan = p
+            }
+            try PinSync.apply(plan, to: target, transfer: transfer, openFolders: openFolders, backups: backups, logError: logError)
+            problem(target.id, nil)
+            let pinned = plan.newPins.filter { !plan.seen.sidebar.contains($0) }.count, unpinned = plan.seen.sidebar.filter { !plan.newPins.contains($0) }.count
             log("Pins synced from '\(source.name)' to '\(target.name)' (\(pinned) pinned, \(unpinned) unpinned)")
         } catch {
             // Fixed, path-free reasons only: the user-facing messages quote file paths and the log is pasted into bug reports.
             let reason = (error as? SwitcherError)?.logReason ?? Switcher.describe(error)
+            if let e = error as? SwitcherError, let note = pinSyncNote(for: e, target: target) { problem(target.id, note) }
             logError("Pin sync for '\(target.name)' failed: \(reason)")
+            if let e = error as? SwitcherError, e.logReason == "pin store restore failed" { return e }
+        }
+        return nil
+    }
+
+    /// The panel note for a refusal that will repeat until the user acts; nil for anything that may pass by itself.
+    static func pinSyncNote(for error: SwitcherError, target: Profile) -> String? {
+        switch error.logReason {
+        case "no pin record yet", "pin store format not recognised":
+            return error.message
+        case "leveldb read failed", "leveldb log not clean", "leveldb lock missing", "leveldb current log missing":
+            let name = target.name
+            return L("Claude's pin storage in '\(name)' could not be read safely, so pins were not synced there.",
+                     "'\(name)' hesabındaki Claude pin deposu güvenle okunamadı, bu yüzden pinler orada eşitlenmedi.")
+        default:
+            return nil
         }
     }
 
-    /// The folders of every profile that is running or starting: nothing may be written to these.
-    /// Safe to call from any thread.
+    /// The folders of every profile that is running, starting or being written by the switcher: nothing else
+    /// may be written to these. Safe to call from any thread.
     public func openFolders() -> [URL] {
-        store.list(status: true).filter { $0.isRunning || isStarting($0) }.map(\.path)
+        store.list(status: true).filter { $0.isRunning || isStarting($0) || claims.isWriting($0.id) }.map(\.path)
     }
 
-    /// Launched from here in the last 20 s and not visible as a process yet. Treated as
+    /// Launched (from here or the command line) in the last 20 s and not visible as a process yet. Treated as
     /// open by everything that must not touch an open profile.
     public func isStarting(_ target: Profile) -> Bool {
-        guard let since = startedAt(target.id) else { return false }
-        return Date().timeIntervalSince(since) < 20 && store.isRunning(target) == nil
+        claims.startedRecently(target.id) && store.isRunning(target) == nil
+    }
+
+    /// Runs `body` with every profile claimed for writing, so no launch (here or from the command line) starts one
+    /// meanwhile. Throws when one is open, starting or already being written.
+    public func whileWriting<T>(_ profiles: [Profile], _ body: () throws -> T) throws -> T {
+        try claims.claimWriting(profiles) { self.store.isRunning($0) != nil || self.claims.startedRecently($0.id) }
+        defer { claims.dropWriting(profiles) }
+        return try body()
     }
 
     /// The profile's folder, then its ProfileArgs without any data folder switch of their
@@ -206,12 +264,15 @@ public final class Switcher {
     /// Asks one copy to quit, and reports whether it did within the time given.
     public func quit(_ target: Profile, timeout: TimeInterval = 30, completion: @escaping (Bool) -> Void) {
         guard let pid = store.isRunning(target), let app = NSRunningApplication(processIdentifier: pid) else { completion(true); return }
+        let started = ProcessScanner.startTime(pid: pid)
         app.terminate()
         let until = Date().addingTimeInterval(timeout)
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
             // Gone means gone from the kernel, not just from Launch Services' list: the copy
-            // writes its chat list and pins while it quits.
-            if kill(pid, 0) != 0, errno == ESRCH { timer.invalidate(); completion(true) }
+            // writes its chat list and pins while it quits. A different start time means the
+            // pid went to another process.
+            let reused = started != nil && ProcessScanner.startTime(pid: pid) != started
+            if (kill(pid, 0) != 0 && errno == ESRCH) || reused { timer.invalidate(); completion(true) }
             else if Date() > until { timer.invalidate(); completion(false) }
         }
     }
@@ -233,6 +294,9 @@ public final class Switcher {
         if isStarting(target) {
             throw SwitcherError(L("'\(target.name)' is starting. Quit it before deleting it.", "'\(target.name)' açılıyor. Silmeden önce kapatın."))
         }
+        if claims.isWriting(target.id) {
+            throw SwitcherError(L("'\(target.name)' is being updated by the switcher. Try again in a moment.", "'\(target.name)' switcher tarafından güncelleniyor. Birazdan tekrar deneyin."))
+        }
         try store.delete(target)
         launchers.remove(label: target.name)
     }
@@ -242,7 +306,8 @@ public final class Switcher {
         let base = NSWorkspace.shared.icon(forFile: claude.url.path)
         let letter = target.isDefault ? nil : Badge.letter(for: target.name)
         let color = target.isDefault ? nil : badgeColor(target)
-        return try launchers.create(profile: target) { Badge.badged(base: base, letter: letter, color: color, pixels: $0) }
+        return try launchers.create(profile: target, icon: { Badge.badged(base: base, letter: letter, color: color, pixels: $0) },
+                                    onRegisterFailure: { self.logError("Launch Services did not register the launcher for '\(target.name)' (status \($0)); Spotlight may not list it.") })
     }
 
     public func badgeColor(_ target: Profile) -> NSColor {
@@ -259,42 +324,61 @@ public final class Switcher {
 
     /// Makes the switcher the app macOS opens claude:// links with. Claude takes that back
     /// every time it starts, so the menu bar app takes it again whenever it notices.
-    public func enableRouting() {
-        if settings["RouterBackup"] == nil, let current = LinkHandler.current(scheme: "claude"),
-           current.caseInsensitiveCompare(ownBundleID) != .orderedSame {
-            settings.set("RouterBackup", current)
+    public func enableRouting() throws {
+        let current = LinkHandler.current(scheme: "claude")
+        let status = LinkHandler.set(scheme: "claude", bundleID: ownBundleID)
+        guard status == noErr else {
+            throw SwitcherError(L("macOS did not make the switcher the claude:// handler (status \(status)).",
+                                  "macOS switcher'ı claude:// işleyicisi yapmadı (durum \(status))."))
         }
-        LinkHandler.set(scheme: "claude", bundleID: ownBundleID)
-        settings.set("SignInRouting", true)
+        if settings["RouterBackup"] == nil, let current, current.caseInsensitiveCompare(ownBundleID) != .orderedSame {
+            try settings.set("RouterBackup", current)
+        }
+        try settings.set("SignInRouting", true)
         log("Sign-in routing turned on.")
     }
 
-    /// Returns one line per thing done.
-    public func disableRouting() -> [String] {
+    /// `done`: one line per thing done. `failures`: what could not be done.
+    public func disableRouting() -> (done: [String], failures: [String]) {
         Switcher.disableRouting(paths: paths, ownBundleID: ownBundleID)
     }
 
     /// Needs no Claude, so routing can be turned off after Claude was removed.
-    public static func disableRouting(paths: Paths, ownBundleID: String) -> [String] {
+    public static func disableRouting(paths: Paths, ownBundleID: String) -> (done: [String], failures: [String]) {
         let settings = Settings(file: paths.settingsFile)
-        settings.set("SignInRouting", false)
         PendingSignIn(file: paths.pendingSignIn).clear()
         var done: [String] = []
+        var failures: [String] = []
+        // The handler goes back first: it is what matters even when settings.json cannot be saved.
         if LinkHandler.current(scheme: "claude")?.caseInsensitiveCompare(ownBundleID) == .orderedSame {
             let original = (settings["RouterBackup"] as? String) ?? ClaudeApp.bundleID
-            LinkHandler.set(scheme: "claude", bundleID: original)
-            done.append(L("gave claude:// links back to \(original)", "claude:// linkleri yeniden \(original) uygulamasına verildi"))
+            let status = LinkHandler.set(scheme: "claude", bundleID: original)
+            if status == noErr {
+                done.append(L("gave claude:// links back to \(original)", "claude:// linkleri yeniden \(original) uygulamasına verildi"))
+            } else {
+                failures.append(L("could not give claude:// links back to \(original) (status \(status))",
+                                  "claude:// linkleri \(original) uygulamasına geri verilemedi (durum \(status))"))
+            }
         }
-        settings.set("RouterBackup", nil)
+        do {
+            try settings.set("SignInRouting", false)
+            try settings.set("RouterBackup", nil)
+        } catch {
+            failures.append(L("could not update settings.json: \(error.localizedDescription)", "settings.json güncellenemedi: \(error.localizedDescription)"))
+        }
         append("Sign-in routing turned off.", to: paths.routerLog)
-        return done
+        return (done, failures)
     }
 
     /// Called on a timer. True when the handler had to be taken back.
     @discardableResult
     public func retakeRouterIfNeeded() -> Bool {
         if routingOn, !routerRegistered {
-            LinkHandler.set(scheme: "claude", bundleID: ownBundleID)
+            let status = LinkHandler.set(scheme: "claude", bundleID: ownBundleID)
+            guard status == noErr else {
+                log("Could not take the claude:// handler back (status \(status)).")
+                return false
+            }
             log("Took the claude:// handler back.")
             return true
         }
@@ -361,17 +445,17 @@ public final class Switcher {
         let front = WindowList.frontmost(among: Set(profiles.compactMap(\.pid)))
         // A profile that has signed in since (inside Claude's own window, which never comes
         // through here) is no longer waiting, whatever the marker says.
-        let pendingID = pending.get().flatMap { id in
-            store.resolve(id).map { SignInState.signedIn(profileDir: $0.path) == true ? nil : id } ?? nil
+        let pendingIDs = pending.get().filter { id in
+            store.resolve(id).map { SignInState.signedIn(profileDir: $0.path) != true } ?? false
         }
-        if let pick = SignInRouting.select(candidates, pendingID: pendingID, frontmostPID: front) {
+        if let pick = SignInRouting.select(candidates, pendingIDs: pendingIDs, frontmostPID: front) {
             deliver(link, to: pick.profile)
+            if pendingIDs.contains(pick.profile.id) { pending.remove(pick.profile.id) }
             log("Sign-in sent to '\(pick.profile.name)' (\(pick.reason)).")
         } else {
             deliver(link, to: defaultProfile)
             log("Sign-in sent to Default (no other account was waiting for one).")
         }
-        pending.clear()
     }
 
     // MARK: Logs
@@ -392,7 +476,8 @@ public final class Switcher {
         Switcher.append(message, to: paths.errorLog)
     }
 
-    /// One queue for every log line, from any thread, so lines and the rotation never race.
+    /// One queue for every log line within a process, and a file lock across the app and the command line,
+    /// so lines and the rotation never race. Logging never fails an action: every failure is silent.
     private static let logQueue = DispatchQueue(label: "ClaudeProfileSwitcher.log")
 
     static func append(_ message: String, to file: URL) {
@@ -400,17 +485,30 @@ public final class Switcher {
     }
 
     private static func appendNow(_ message: String, to file: URL) {
-        let fm = FileManager.default
-        try? fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        // One line per event, so this only grows large over years. Start over past 100 KB.
-        if let size = (try? fm.attributesOfItem(atPath: file.path))?[.size] as? Int, size > 100_000 { try? fm.removeItem(at: file) }
-        let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
-        if let handle = try? FileHandle(forWritingTo: file) {
-            handle.seekToEndOfFile()
-            handle.write(Data(line.utf8))
-            try? handle.close()
-        } else {
-            try? Data(line.utf8).write(to: file)
+        let lock = URL(fileURLWithPath: file.path + ".lock")
+        // A lock failure skips the line rather than risk an unlocked write.
+        try? FileLock.exclusively(lock) {
+            let fm = FileManager.default
+            // One line per event, so this only grows large over years. Start over past 100 KB.
+            if let size = (try? fm.attributesOfItem(atPath: file.path))?[.size] as? Int, size > 100_000 { try? fm.removeItem(at: file) }
+            let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
+            // O_APPEND with a single write keeps the line whole even if another process slipped in.
+            let fd = open(file.path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
+            guard fd >= 0 else { return }
+            defer { close(fd) }
+            let bytes = Array(line.utf8)
+            _ = bytes.withUnsafeBufferPointer { write(fd, $0.baseAddress, $0.count) }
         }
     }
+}
+
+/// The panel notes about refused pin syncs, one per profile id, safe to use from any thread.
+final class PinSyncNotes {
+    private var notes: [String: String] = [:]
+    private let lock = NSLock()
+
+    var all: [String: String] { lock.lock(); defer { lock.unlock() }; return notes }
+
+    /// nil clears the profile's note; other profiles' notes stay.
+    func set(_ id: String, _ note: String?) { lock.lock(); defer { lock.unlock() }; notes[id] = note }
 }

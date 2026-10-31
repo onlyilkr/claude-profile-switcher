@@ -13,7 +13,7 @@ public struct Paths {
 
     public var appSupport: URL { home.appendingPathComponent("Library/Application Support", isDirectory: true) }
 
-    /// Claude's own data folder. The switcher never writes into it.
+    /// Claude's own data folder. The switcher writes into it only while Default is closed (pins and chat records), after a backup.
     public var defaultProfile: URL { appSupport.appendingPathComponent("Claude", isDirectory: true) }
 
     /// Extra profiles sit next to Claude's own folder, the macOS counterpart of
@@ -27,6 +27,10 @@ public struct Paths {
     public var routerLog: URL { switcherHome.appendingPathComponent("sign-in-router.log") }
     public var errorLog: URL { switcherHome.appendingPathComponent("switcher-error.log") }
     public var pendingSignIn: URL { switcherHome.appendingPathComponent("pending-sign-in.json") }
+    public var claimsFile: URL { switcherHome.appendingPathComponent("claims.json") }
+
+    /// Copies of an account's pin databases taken before the switcher writes them, newest five per account.
+    public var pinStoreBackups: URL { switcherHome.appendingPathComponent("backups/pinstore", isDirectory: true) }
 
     /// Launcher apps go where Spotlight and Launchpad look, without needing admin rights.
     public var launcherDir: URL { home.appendingPathComponent("Applications", isDirectory: true) }

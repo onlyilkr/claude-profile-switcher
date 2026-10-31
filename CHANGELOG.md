@@ -4,6 +4,50 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-10-29
+
+Fixes for races between the app and the command line, settings that failed silently, and a few
+hand-edited or unexpected files.
+
+### Added
+
+- The chat transfer also brings the missing parent chats of a sub-session, so it shows under its parent
+  in the target account (a toggle in the transfer window, on by default).
+
+### Fixed
+
+- Pin sync and the transfer's pins now show in Claude's sidebar: 1.1.0 wrote a copy Claude ignores. The
+  account you used last is the base: its pinned shared chats come first, in its order, then the opened
+  account's own pins. A transfer puts the carried pins on top.
+- The app and the command line no longer both start one account in the moment before its window
+  appears; launch decisions are shared between them.
+- An account the switcher is copying chats into cannot be opened or deleted until the copy finishes; it
+  says it is being updated. Chat links and pin sync leave such an account alone too.
+- Settings that cannot be saved now say so instead of failing silently, and two writers no longer lose
+  each other's labels or options.
+- When several accounts wait for a browser sign-in at once, each sign-in goes to the right one
+  (the frontmost, else the most recently opened).
+- Chat transfer no longer stalls the panel.
+- A `claude_desktop_config.json` with an unexpected shape is left untouched instead of having its
+  preferences replaced.
+- Open accounts are recognised however their folder path is spelled.
+- A hand-edited negative colour no longer crashes the app, and hand-edited labels can no longer place
+  a launcher outside `~/Applications`.
+- `--claude-path` accepts only Claude.
+- A failed change of the `claude://` handler is reported, and `--revert` exits 1 when something could
+  not be undone.
+- The account row's tooltip shows both the open action and the usage detail again; the weekly limit
+  was hidden.
+- Quitting an account is detected even if macOS reuses its process id.
+- `--launch` with sign-in routing on stops waiting about 3 seconds after the handler is back, instead
+  of always 20, and says why it waits.
+
+### Changed
+
+- `brew uninstall --zap` also removes the switcher's backups of `claude_desktop_config.json`.
+- Release builds must be universal: they fail instead of quietly building for one architecture.
+- New log and lock files are private to your user (0600).
+
 ## [1.1.0] - 2026-10-29
 
 Chats that exist in several accounts are now visible, and the switcher can keep their pins and,
@@ -99,5 +143,6 @@ First public release: a macOS port of
   `--route-sign-ins`, `--revert`, `--open-link`, `--open-links-in`, `--claude-path`.
 - English and Turkish, following the system language.
 
+[1.1.1]: https://github.com/onlyilkr/claude-profile-switcher/releases/tag/v1.1.1
 [1.1.0]: https://github.com/onlyilkr/claude-profile-switcher/releases/tag/v1.1.0
 [1.0.0]: https://github.com/onlyilkr/claude-profile-switcher/releases/tag/v1.0.0

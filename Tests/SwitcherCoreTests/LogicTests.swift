@@ -32,26 +32,26 @@ final class RoutingTests: XCTestCase {
     func testPendingWins() {
         let c = [SignInRouting.Candidate(profile: profile("Work", pid: nil), signedIn: nil),
                  SignInRouting.Candidate(profile: profile("Home", pid: 20), signedIn: false)]
-        XCTAssertEqual(SignInRouting.select(c, pendingID: "Work", frontmostPID: 20)?.profile.id, "Work")
+        XCTAssertEqual(SignInRouting.select(c, pendingIDs: ["Work"], frontmostPID: 20)?.profile.id, "Work")
     }
 
     func testPendingNeverDefault() {
         let c = [SignInRouting.Candidate(profile: profile(Profile.defaultID, pid: 1), signedIn: false)]
-        XCTAssertNil(SignInRouting.select(c, pendingID: Profile.defaultID, frontmostPID: nil))
+        XCTAssertNil(SignInRouting.select(c, pendingIDs: [Profile.defaultID], frontmostPID: nil))
     }
 
     func testOnlySignedOutAccount() {
         let c = [SignInRouting.Candidate(profile: profile("A", pid: 10), signedIn: true),
                  SignInRouting.Candidate(profile: profile("B", pid: 11), signedIn: false),
                  SignInRouting.Candidate(profile: profile("C", pid: nil), signedIn: nil)]
-        XCTAssertEqual(SignInRouting.select(c, pendingID: nil, frontmostPID: 10)?.profile.id, "B")
+        XCTAssertEqual(SignInRouting.select(c, pendingIDs: [], frontmostPID: 10)?.profile.id, "B")
     }
 
     func testFrontmostWhenAmbiguous() {
         let c = [SignInRouting.Candidate(profile: profile("A", pid: 10), signedIn: false),
                  SignInRouting.Candidate(profile: profile("B", pid: 11), signedIn: false)]
-        XCTAssertEqual(SignInRouting.select(c, pendingID: nil, frontmostPID: 11)?.profile.id, "B")
-        XCTAssertNil(SignInRouting.select(c, pendingID: nil, frontmostPID: 99))
+        XCTAssertEqual(SignInRouting.select(c, pendingIDs: [], frontmostPID: 11)?.profile.id, "B")
+        XCTAssertNil(SignInRouting.select(c, pendingIDs: [], frontmostPID: 99))
     }
 
     func testPendingMarkerExpires() throws {
@@ -59,9 +59,24 @@ final class RoutingTests: XCTestCase {
         let marker = PendingSignIn(file: dir.appendingPathComponent("p.json"))
         let now = Date()
         marker.set("Work", minutes: 15, now: now)
-        XCTAssertEqual(marker.get(now: now.addingTimeInterval(60)), "Work")
-        XCTAssertNil(marker.get(now: now.addingTimeInterval(16 * 60)))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.file.path), "an expired marker is cleared")
+        XCTAssertEqual(marker.get(now: now.addingTimeInterval(60)), ["Work"])
+        XCTAssertEqual(marker.get(now: now.addingTimeInterval(16 * 60)), [])
+    }
+
+    func testSelectPrefersTheFrontmostOfSeveralPending() {
+        let c = [SignInRouting.Candidate(profile: profile("A", pid: 10), signedIn: false),
+                 SignInRouting.Candidate(profile: profile("B", pid: 20), signedIn: false)]
+        let decision = SignInRouting.select(c, pendingIDs: ["B", "A"], frontmostPID: 10)
+        XCTAssertEqual(decision?.profile.id, "A")
+        XCTAssertEqual(decision?.reason, "launched while signed out, frontmost of several")
+    }
+
+    func testSelectFallsBackToTheMostRecentPending() {
+        let c = [SignInRouting.Candidate(profile: profile("A", pid: 10), signedIn: false),
+                 SignInRouting.Candidate(profile: profile("B", pid: 20), signedIn: false)]
+        let decision = SignInRouting.select(c, pendingIDs: ["B", "A"], frontmostPID: nil)
+        XCTAssertEqual(decision?.profile.id, "B")
+        XCTAssertEqual(decision?.reason, "launched while signed out, most recent of several")
     }
 
     func testSignedInDetection() {
@@ -126,8 +141,8 @@ final class SettingsTests: XCTestCase {
 
     func testProfileEnvAndArgs() throws {
         let s = Settings(file: try tempDir().appendingPathComponent("settings.json"))
-        s.set("ProfileEnv", ["Work": ["MY_VAR": "v", "1BAD": "x", "BAD-NAME": "y", "N": 3]])
-        s.set("ProfileArgs", ["Work": "--a --b", "Home": ["--lang", "fr FR"]])
+        try s.set("ProfileEnv", ["Work": ["MY_VAR": "v", "1BAD": "x", "BAD-NAME": "y", "N": 3]])
+        try s.set("ProfileArgs", ["Work": "--a --b", "Home": ["--lang", "fr FR"]])
         XCTAssertEqual(s.profileEnv("Work"), ["MY_VAR": "v", "N": "3"])
         XCTAssertEqual(s.profileEnv("Other"), [:])
         XCTAssertEqual(s.profileArgs("Work"), ["--a", "--b"])
@@ -144,6 +159,51 @@ final class SettingsTests: XCTestCase {
         let b = Badge.colorIndex(for: "B", settings: s, alive: ["A", "B"])
         XCTAssertNotEqual(a, b, "a new profile gets the least used colour")
         XCTAssertEqual(Badge.colorIndex(for: "A", settings: s, alive: ["A", "B"]), a, "and keeps it")
+    }
+
+    func testKnownColourDoesNotRewriteSettings() throws {
+        let file = try tempDir().appendingPathComponent("settings.json")
+        let settings = Settings(file: file)
+        let first = Badge.colorIndex(for: "Work", settings: settings, alive: ["Work"])
+        let bytes = try Data(contentsOf: file)
+        let date = try FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate] as? Date
+        Thread.sleep(forTimeInterval: 0.05)
+        XCTAssertEqual(Badge.colorIndex(for: "Work", settings: settings, alive: ["Work"]), first)
+        XCTAssertEqual(try Data(contentsOf: file), bytes)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate] as? Date, date)
+    }
+
+    func testNegativeStoredColourDoesNotCrash() throws {
+        let settings = Settings(file: try tempDir().appendingPathComponent("settings.json"))
+        try settings.set("Colors", ["Work": -3])
+        XCTAssertEqual(Badge.colorIndex(for: "Work", settings: settings, alive: ["Work"]), 5)
+        XCTAssertTrue((0..<8).contains(Badge.colorIndex(for: "Home", settings: settings, alive: ["Work", "Home"])))
+    }
+
+    func testLauncherStaysInItsFolderWhateverTheLabel() throws {
+        let dir = try tempDir()
+        let launchers = Launchers(dir: dir, ownBundleID: "test.app")
+        for label in ["../../evil", "a/b", ".hidden", "x:y", "line\nbreak", "  "] {
+            let url = launchers.url(forLabel: label)
+            XCTAssertEqual(url.deletingLastPathComponent().standardizedFileURL, dir.standardizedFileURL)
+            XCTAssertTrue(url.lastPathComponent.hasPrefix("Claude - "))
+            XCTAssertFalse(url.lastPathComponent.dropFirst("Claude - ".count).contains("/"))
+        }
+    }
+
+    func testConcurrentLabelEditsKeepEveryLabel() throws {
+        let file = try tempDir().appendingPathComponent("settings.json")
+        let app = Settings(file: file), cli = Settings(file: file)
+        let group = DispatchGroup()
+        for (settings, range) in [(app, 0..<50), (cli, 50..<100)] {
+            group.enter()
+            Thread.detachNewThread {
+                for id in range { try? settings.setLabel("\(id)", "L\(id)") }
+                group.leave()
+            }
+        }
+        group.wait()
+        XCTAssertEqual(Settings(file: file).labels.count, 100)
     }
 }
 
@@ -219,10 +279,8 @@ final class ReviewFixTests: XCTestCase {
         try FileManager.default.createDirectory(at: source.path, withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: ["preferences": ["epitaxyPrefs": ["starred-local-code-sessions": ["local_a"]]]])
             .write(to: ChatTransfer.configFile(source))
-        let session = CodeSession(file: home.appendingPathComponent("local_a.json"), sessionID: "a", cliSessionID: "c",
-                                  priorCLISessionIDs: [], title: "t", folder: "", updated: Date(), hasTranscript: true)
         let transfer = ChatTransfer(transcriptsRoot: home)
-        XCTAssertThrowsError(try transfer.carryPins(of: [session], from: source, to: target))
+        XCTAssertThrowsError(try transfer.writePins(["local_a"], to: target))
         XCTAssertEqual(try Data(contentsOf: ChatTransfer.configFile(target)), broken, "the user's file is left exactly as it was")
     }
 
@@ -238,8 +296,8 @@ final class ReviewFixTests: XCTestCase {
             CodeSession(file: home.appendingPathComponent("local_\(id).json"), sessionID: id, cliSessionID: "c\(id)",
                         priorCLISessionIDs: [], title: id, folder: "", updated: Date(), hasTranscript: true)
         }
-        XCTAssertEqual(try ChatTransfer(transcriptsRoot: home).carryPins(of: [session("a")], from: source, to: target), 1)
-        XCTAssertEqual(try ChatTransfer(transcriptsRoot: home).carryPins(of: [session("b")], from: source, to: target), 1)
+        try ChatTransfer(transcriptsRoot: home).writePins(["local_a"], to: target)
+        try ChatTransfer(transcriptsRoot: home).writePins(["local_a", "local_b"], to: target)
         let backups = try FileManager.default.contentsOfDirectory(atPath: target.path.path).filter { $0.contains("switcher-backup") }
         XCTAssertEqual(backups.count, 2, "each change keeps its own backup")
     }
@@ -250,7 +308,7 @@ final class ReviewFixTests: XCTestCase {
         try broken.write(to: file)
         let settings = Settings(file: file)
         XCTAssertNotNil(settings.problem)
-        settings.set("Colors", ["Work": 1])
+        XCTAssertThrowsError(try settings.set("Colors", ["Work": 1]))
         XCTAssertEqual(try Data(contentsOf: file), broken, "a hand edit with a typo is never thrown away")
     }
 
@@ -304,9 +362,7 @@ final class LaunchArgumentTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: ChatTransfer.configFile(target), withDestinationURL: shared)
         try JSONSerialization.data(withJSONObject: ["preferences": ["epitaxyPrefs": ["starred-local-code-sessions": ["local_a"]]]])
             .write(to: ChatTransfer.configFile(source))
-        let session = CodeSession(file: home.appendingPathComponent("local_a.json"), sessionID: "a", cliSessionID: "c",
-                                  priorCLISessionIDs: [], title: "a", folder: "", updated: Date(), hasTranscript: true)
-        XCTAssertEqual(try ChatTransfer(transcriptsRoot: home).carryPins(of: [session], from: source, to: target), 1)
+        try ChatTransfer(transcriptsRoot: home).writePins(["local_a"], to: target)
         let link = try FileManager.default.destinationOfSymbolicLink(atPath: ChatTransfer.configFile(target).path)
         XCTAssertEqual(URL(fileURLWithPath: link).resolvingSymlinksInPath(), shared.resolvingSymlinksInPath(), "the link is kept")
         XCTAssertEqual(ChatTransfer(transcriptsRoot: home).pins(of: target), ["local_a"])
@@ -344,10 +400,20 @@ final class AuditFixTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: ChatTransfer.configFile(target), withDestinationURL: shared)
         try JSONSerialization.data(withJSONObject: ["preferences": ["epitaxyPrefs": ["starred-local-code-sessions": ["local_a"]]]])
             .write(to: ChatTransfer.configFile(source))
-        let session = CodeSession(file: home.appendingPathComponent("local_a.json"), sessionID: "a", cliSessionID: "c",
-                                  priorCLISessionIDs: [], title: "a", folder: "", updated: Date(), hasTranscript: true)
-        XCTAssertThrowsError(try ChatTransfer(transcriptsRoot: home).carryPins(of: [session], from: source, to: target, openFolders: [other]))
+        XCTAssertThrowsError(try ChatTransfer(transcriptsRoot: home).writePins(["local_a"], to: target, openFolders: [other]))
         XCTAssertEqual(try Data(contentsOf: shared), original, "an open profile's config is left alone")
+    }
+
+    func testConcurrentAppendsKeepEveryLineWhole() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let log = dir.appendingPathComponent("router.log")
+        DispatchQueue.concurrentPerform(iterations: 4) { thread in
+            for n in 0..<100 { Switcher.append("t\(thread)-\(n)", to: log) }
+        }
+        let lines = try String(contentsOf: log).split(separator: "\n")
+        XCTAssertEqual(lines.count, 400)
+        XCTAssertTrue(lines.allSatisfy { $0.range(of: #"^\[[^\]]+\] t\d-\d+$"#, options: .regularExpression) != nil })
     }
 }
 
@@ -371,5 +437,100 @@ final class UsageAgeTests: XCTestCase {
     func testUsageLinkIsOneTheSwitcherAccepts() {
         XCTAssertTrue(SignInLinks.isSafe(Switcher.usageLink))
         XCTAssertFalse(SignInLinks.isSignIn(Switcher.usageLink), "never treated as a sign-in")
+    }
+}
+
+final class PendingSignInTests: XCTestCase {
+    var file: URL!
+    var marker: PendingSignIn!
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+
+    override func setUpWithError() throws {
+        file = try tempDir().appendingPathComponent("pending-sign-in.json")
+        marker = PendingSignIn(file: file)
+    }
+
+    func testTwoPendingAccountsAreBothKept() {
+        marker.set("A", now: t0); marker.set("B", now: t0 + 1)
+        XCTAssertEqual(marker.get(now: t0 + 2), ["B", "A"])
+    }
+
+    func testGetIgnoresExpiredEntriesWithoutWriting() throws {
+        marker.set("A", minutes: 1, now: t0)
+        let before = try Data(contentsOf: file)
+        XCTAssertEqual(marker.get(now: t0 + 120), [])
+        XCTAssertEqual(try Data(contentsOf: file), before)
+    }
+
+    func testReads110SingleMarker() throws {
+        try JSONSerialization.data(withJSONObject: ["Profile": "A", "Expires": t0.timeIntervalSince1970 + 60]).write(to: file)
+        XCTAssertEqual(marker.get(now: t0), ["A"])
+    }
+
+    func testRemoveKeepsTheOthers() {
+        marker.set("A", now: t0); marker.set("B", now: t0); marker.remove("A", now: t0)
+        XCTAssertEqual(marker.get(now: t0), ["B"])
+    }
+
+    func testRemovingTheLastEntryDeletesTheFile() {
+        marker.set("A", now: t0); marker.remove("A", now: t0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testSetAgainMovesToFrontAndDropsExpired() {
+        marker.set("A", minutes: 1, now: t0); marker.set("B", now: t0 + 30); marker.set("A", now: t0 + 90)
+        XCTAssertEqual(marker.get(now: t0 + 91), ["A", "B"])
+    }
+}
+
+final class ClaudeLookupTests: XCTestCase {
+    /// A fake app bundle: only an Info.plist and an executable, never the real Claude.
+    private func makeBundle(_ name: String, id: String) throws -> URL {
+        let app = try tempDir().appendingPathComponent(name)
+        let macOS = app.appendingPathComponent("Contents/MacOS")
+        try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
+        let plist: [String: Any] = ["CFBundleIdentifier": id, "CFBundleExecutable": "run", "CFBundleShortVersionString": "1.0"]
+        try (plist as NSDictionary).write(to: app.appendingPathComponent("Contents/Info.plist"))
+        let exe = macOS.appendingPathComponent("run")
+        try Data("#!/bin/sh\n".utf8).write(to: exe)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exe.path)
+        return app
+    }
+
+    func testStrictLocateRejectsAnotherApp() throws {
+        let fake = try makeBundle("Calc.app", id: "com.example.calc")
+        XCTAssertThrowsError(try ClaudeApp.locate(override: fake.path, strict: true))
+    }
+
+    func testStrictLocateAcceptsClaudesBundleID() throws {
+        let claude = try makeBundle("Claude.app", id: ClaudeApp.bundleID)
+        XCTAssertEqual(try ClaudeApp.locate(override: claude.path, strict: true).url.path, claude.path)
+    }
+
+    func testSavedPathToAnotherAppIsSkipped() throws {
+        let fake = try makeBundle("Calc.app", id: "com.example.calc")
+        XCTAssertNotEqual(try? ClaudeApp.locate(override: fake.path).url.path, fake.path)
+    }
+}
+
+final class QuitAndRetakeWaitTests: XCTestCase {
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func testStartTimeOfThisProcessIsStable() {
+        let a = ProcessScanner.startTime(pid: getpid())
+        XCTAssertNotNil(a)
+        XCTAssertEqual(a, ProcessScanner.startTime(pid: getpid()))
+    }
+
+    func testStartTimeOfAMissingProcessIsNil() { XCTAssertNil(ProcessScanner.startTime(pid: 999_999)) }
+
+    func testRetakeWaitStopsAtTheLimitWithoutARetake() {
+        XCTAssertFalse(RetakeWait.done(start: t0, lastRetake: nil, now: t0 + 19))
+        XCTAssertTrue(RetakeWait.done(start: t0, lastRetake: nil, now: t0 + 20))
+    }
+
+    func testRetakeWaitStopsThreeSecondsAfterTheLastRetake() {
+        XCTAssertFalse(RetakeWait.done(start: t0, lastRetake: t0 + 5, now: t0 + 7))
+        XCTAssertTrue(RetakeWait.done(start: t0, lastRetake: t0 + 5, now: t0 + 8))
     }
 }

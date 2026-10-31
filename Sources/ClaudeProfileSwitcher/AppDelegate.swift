@@ -129,6 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let linking = sw.settings["LinkWorktreeChats"] as? Bool == true
         set(\.linkChats, linking)
         set(\.syncPins, sw.settings.syncPins)
+        set(\.pinSyncProblems, sw.pinSyncProblems.sorted { $0.key < $1.key }.map(\.value))
         updateOpenTwiceTimer()
         if sharedChatsModel.linkEnabled != linking { sharedChatsModel.linkEnabled = linking }
         set(\.showRoutingBanner, sw.settings.signInRouting == nil && profiles.count > 1)
@@ -183,16 +184,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         a.setRouting = { [weak self] on in
             guard let sw = self?.switcher else { return }
-            if on { sw.enableRouting() } else { _ = sw.disableRouting() }
+            if on {
+                do { try sw.enableRouting() } catch { self?.state.errorMessage = error.localizedDescription }
+            } else {
+                let failures = sw.disableRouting().failures
+                if !failures.isEmpty { self?.state.errorMessage = failures.joined(separator: "\n") }
+            }
             self?.refresh()
         }
         a.decideRouting = { [weak self] yes in
             guard let sw = self?.switcher else { return }
-            if yes { sw.enableRouting() } else { sw.settings.set("SignInRouting", false) }
+            if yes {
+                do { try sw.enableRouting() } catch { self?.state.errorMessage = error.localizedDescription }
+            } else { self?.save("SignInRouting", false) }
             self?.refresh()
         }
         a.setOtherLinks = { [weak self] id in
-            self?.switcher?.settings.set("OpenLinksIn", id == Profile.defaultID ? nil : id)
+            self?.save("OpenLinksIn", id == Profile.defaultID ? nil : id)
             self?.refresh()
         }
         a.setLogin = { [weak self] on in
@@ -207,7 +215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         a.setLinkChats = { [weak self] on in self?.setLinkChats(on) }
         a.linkAll = { [weak self] in self?.panel.close(); self?.linkAll() }
         a.setSyncPins = { [weak self] on in
-            self?.switcher?.settings.set("SyncPins", on)
+            self?.save("SyncPins", on)
             self?.refresh()
         }
         a.quit = { NSApp.terminate(nil) }
@@ -318,7 +326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         brokenBefore = broken
         guard confirmed else { return }
         brokenBefore = []
-        sw.settings.set("LinkWorktreeChats", false)
+        save("LinkWorktreeChats", false)
         refresh()
         let v = sw.claude.version
         report(L("Claude moved a linked chat again (Claude \(v)); linking is off.", "Claude bağlı bir sohbeti yine taşıdı (Claude \(v)); bağlama kapatıldı."))
@@ -356,16 +364,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Settings writes can fail (invalid file, read-only folder); say so instead of pretending.
+    private func save(_ key: String, _ value: Any?) {
+        do { try switcher?.settings.set(key, value) } catch {
+            state.errorMessage = L("Could not save settings: \(error.localizedDescription)", "Ayarlar kaydedilemedi: \(error.localizedDescription)")
+        }
+    }
+
     private func setLinkChats(_ on: Bool) {
         guard let sw = switcher else { return }
         brokenBefore = []
         if on {
-            sw.settings.set("LinkWorktreeChats", true)
+            save("LinkWorktreeChats", true)
             refresh()
             scanSharedChats()
             return
         }
-        sw.settings.set("LinkWorktreeChats", false)
+        save("LinkWorktreeChats", false)
         refresh()
         warnedOpenTwice = []
         guard !ledger(sw).linkedSessionIDs().isEmpty else { return }
@@ -554,8 +569,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openTransfer(_ id: String) {
         guard let sw = switcher, let source = sw.store.resolve(id) else { return }
-        let sessions = sw.transfer.sessions(in: source)
-        let targets = sw.store.list(status: false).filter { $0.id != source.id }
+        // Listing a large history reads every chat record, so it stays off the main thread.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let sessions = sw.transfer.sessions(in: source)
+            let targets = sw.store.list(status: false).filter { $0.id != source.id }
+            DispatchQueue.main.async { self?.showTransfer(sw, source: source, sessions: sessions, targets: targets) }
+        }
+    }
+
+    private func showTransfer(_ sw: Switcher, source: Profile, sessions: [CodeSession], targets: [Profile]) {
         if sessions.isEmpty {
             report(L("'\(source.name)' has no Claude Code chats to transfer.", "'\(source.name)' hesabında aktarılacak Claude Code sohbeti yok."))
             return
@@ -567,7 +589,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Weak, so the window and the view's closures do not keep each other alive.
         final class WindowRef { weak var window: NSWindow? }
         let ref = WindowRef()
+        // The target's chats are read once per target, on first use; the source's come from the list.
+        var targetChats: [String: ChatTransfer.TargetChats] = [:]
         let view = TransferView(sourceName: source.name, sessions: sessions, targets: targets,
+                                ancestors: { picked, target in
+                                    let known = targetChats[target.id] ?? sw.transfer.targetChats(of: target)
+                                    targetChats[target.id] = known
+                                    return sw.transfer.missingAncestors(of: picked, among: sessions, target: known)
+                                },
                                 onCancel: { ref.window?.close() },
                                 onCopy: { [weak self] picked, target in
                                     ref.window?.close()
@@ -619,43 +648,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func copy(_ picked: [CodeSession], from source: Profile, to target: Profile, relaunch: Bool) {
         guard let sw = switcher else { return }
-        // Checked again right before writing: a launcher or a link may have opened the
-        // account while the switcher waited for it to quit.
-        if sw.store.isRunning(target) != nil || sw.isStarting(target) {
-            alert(L("'\(target.name)' is open again", "'\(target.name)' yeniden açık"),
-                  L("Nothing was copied. Quit it and transfer again.", "Hiçbir şey kopyalanmadı. Kapatıp aktarımı tekrar deneyin."), style: .warning)
-            return
+        // The copy runs off the main thread, so nothing else keeps the account closed meanwhile: the
+        // writing claim refuses every launch of it (and is refused itself when it is open again, e.g.
+        // a launcher or a link opened it while the switcher waited for it to quit). It is dropped
+        // before anything below runs on main, so the relaunch is not refused as "being updated".
+        struct Outcome {
+            var store: TargetStore?
+            var copied = 0, there = 0, pinned = 0
+            var skipped: [String] = []
+            var copiedSessions: [CodeSession] = []
+            var thereSessions: [CodeSession] = []
         }
-        guard var store = sw.transfer.targetStore(for: target) else {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let outcome: Outcome
+            do {
+                outcome = try sw.whileWriting([target]) {
+                    var o = Outcome()
+                    guard var store = sw.transfer.targetStore(for: target) else { return o }
+                    for s in picked {
+                        switch sw.transfer.copy(s, to: &store) {
+                        case .copied: o.copied += 1; o.copiedSessions.append(s)
+                        case .alreadyThere: o.there += 1; o.thereSessions.append(s)
+                        case .deletedInTarget: o.skipped.append("\(s.title): " + L("deleted in that account", "o hesapta silinmiş"))
+                        case .nameConflict: o.skipped.append("\(s.title): " + L("a different chat has that file name", "aynı dosya adında başka bir sohbet var"))
+                        case .noCLISession: o.skipped.append("\(s.title): " + L("not a resumable chat", "devam ettirilebilir bir sohbet değil"))
+                        case .failed(let why): o.skipped.append("\(s.title): \(why)")
+                        }
+                    }
+                    // Pins follow the chats copied now, in the source's order. A chat that was already
+                    // there is left alone here; pin sync may change it when the target opens.
+                    do {
+                        // Starting accounts count as open, as they do for the linker. The target is claimed for
+                        // writing by this very transfer, so it does not count as open to itself, unless a process is on it.
+                        let open = sw.openFolders().filter { !(ProfileStore.sameItem($0, target.path) && sw.store.isRunning(target) == nil) }
+                        o.pinned = try sw.transfer.carryPins(of: o.copiedSessions, from: source, to: target, openFolders: open,
+                                                    backups: sw.paths.pinStoreBackups, logError: { sw.logError($0) })
+                    } catch {
+                        sw.logError("Pins for '\(target.name)' not carried: \((error as? SwitcherError)?.logReason ?? Switcher.describe(error))")
+                        o.skipped.append(L("Pins were not carried over: \(error.localizedDescription)", "Pinler taşınamadı: \(error.localizedDescription)"))
+                    }
+                    o.store = store
+                    return o
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.alert(L("Nothing was copied to '\(target.name)'", "'\(target.name)' hesabına hiçbir şey kopyalanmadı"),
+                                error.localizedDescription, style: .warning)
+                }
+                return
+            }
+            DispatchQueue.main.async { self?.continueCopy(outcome.store, source: source, target: target, relaunch: relaunch,
+                                                          copied: outcome.copied, there: outcome.there, pinned: outcome.pinned, skipped: outcome.skipped,
+                                                          copiedSessions: outcome.copiedSessions, thereSessions: outcome.thereSessions) }
+        }
+    }
+
+    /// Back on the main thread once the claim is dropped: reports, binds and rescans.
+    private func continueCopy(_ storeIfReady: TargetStore?, source: Profile, target: Profile, relaunch: Bool, copied: Int, there: Int, pinned: Int,
+                              skipped: [String], copiedSessions: [CodeSession], thereSessions: [CodeSession]) {
+        guard let sw = switcher else { return }
+        guard let store = storeIfReady else {
             alert(L("Not ready yet", "Henüz hazır değil"),
                   L("'\(target.name)' has not used Claude Code yet, so there is nowhere to put the chats.\n\nOpen it, sign in, visit the Code tab once, then try again.",
                     "'\(target.name)' henüz Claude Code kullanmadı, sohbetleri koyacak yer yok.\n\nAçın, giriş yapın, Code sekmesine bir kez girin ve tekrar deneyin."))
             if relaunch { sw.launch(target) }
             return
         }
-        var copied = 0, there = 0, skipped: [String] = []
-        var copiedSessions: [CodeSession] = []
-        var thereSessions: [CodeSession] = []
-        for s in picked {
-            switch sw.transfer.copy(s, to: &store) {
-            case .copied: copied += 1; copiedSessions.append(s)
-            case .alreadyThere: there += 1; thereSessions.append(s)
-            case .deletedInTarget: skipped.append("\(s.title): " + L("deleted in that account", "o hesapta silinmiş"))
-            case .nameConflict: skipped.append("\(s.title): " + L("a different chat has that file name", "aynı dosya adında başka bir sohbet var"))
-            case .noCLISession: skipped.append("\(s.title): " + L("not a resumable chat", "devam ettirilebilir bir sohbet değil"))
-            case .failed(let why): skipped.append("\(s.title): \(why)")
-            }
-        }
         if copied > 0 { scanSharedChats() }
-        // Pins follow the chats copied now, in the source's order. A chat that was already
-        // there is left alone here; pin sync may change it when the target opens.
-        var pinned = 0
-        do {
-            // Starting accounts count as open, as they do for the linker.
-            pinned = try sw.transfer.carryPins(of: copiedSessions, from: source, to: target, openFolders: sw.openFolders())
-        } catch {
-            skipped.append(L("Pins were not carried over: \(error.localizedDescription)", "Pinler taşınamadı: \(error.localizedDescription)"))
-        }
 
         guard !thereSessions.isEmpty else {
             // Only chats copied just now are bound: their record is the same, so the folders match.

@@ -26,6 +26,8 @@ public struct CodeSession: Identifiable, Equatable {
     public let hasTranscript: Bool
     /// The record's worktreePath, when the chat runs in a git worktree (nil if absent or empty).
     public var worktreePath: String? = nil
+    /// local_<id> of the chat this one was spawned from, unless the record says the lineage is detached.
+    public var parentID: String? = nil
 }
 
 public struct TargetStore {
@@ -136,6 +138,58 @@ public struct ChatTransfer {
         return .copied
     }
 
+    // MARK: Parent chats
+
+    /// local_<id> of the chats the target account has, and of those it deleted (both name forms).
+    public struct TargetChats {
+        public let ids: Set<String>
+        public let deleted: Set<String>
+    }
+
+    public func targetChats(of target: Profile) -> TargetChats {
+        var deleted = Set<String>()
+        for account in subdirectories(ChatTransfer.sessionRoot(target)) {
+            for org in subdirectories(account) {
+                for marker in deletedMarkers(in: org) {
+                    deleted.insert(marker.hasPrefix("local_") ? marker : "local_" + marker)
+                }
+            }
+        }
+        return TargetChats(ids: chatIDs(in: target), deleted: deleted)
+    }
+
+    /// The parents (and their parents) of `picked` that the target lacks, farthest ancestor first,
+    /// without the picked chats themselves. Claude shows a sub-session under its parent only when
+    /// the whole chain up to a chat it knows is there. The walk stops at the first ancestor the
+    /// target has, one `all` does not list, one the target deleted (never revived), a cycle, or
+    /// after 32 steps. `all` is the source's sessions, so nothing is read from disk.
+    public func missingAncestors(of picked: [CodeSession], among all: [CodeSession], target: TargetChats) -> [CodeSession] {
+        let byID = Dictionary(all.map { ("local_" + $0.sessionID, $0) }, uniquingKeysWith: { a, _ in a })
+        let pickedIDs = Set(picked.map { "local_" + $0.sessionID })
+        var found: [String] = []
+        var seenIDs = Set<String>()
+        for chat in picked {
+            var chain: [String] = []
+            var visited: Set<String> = ["local_" + chat.sessionID]
+            var next = chat.parentID
+            var steps = 0
+            while let id = next, steps < 32 {
+                steps += 1
+                if !visited.insert(id).inserted || target.ids.contains(id) || target.deleted.contains(id) { break }
+                guard let parent = byID[id] else { break }
+                if !pickedIDs.contains(id) { chain.append(id) }
+                next = parent.parentID
+            }
+            // Collected nearest first; the copy list wants the farthest first.
+            for id in chain.reversed() where seenIDs.insert(id).inserted { found.append(id) }
+        }
+        return found.compactMap { byID[$0] }
+    }
+
+    public func missingAncestors(of picked: [CodeSession], from source: Profile, to target: Profile) -> [CodeSession] {
+        missingAncestors(of: picked, among: sessions(in: source), target: targetChats(of: target))
+    }
+
     // MARK: Pins
 
     /// Pins are one ordered list of local_<id> values per profile, in its
@@ -154,21 +208,40 @@ public struct ChatTransfer {
         return (node as? [String]) ?? []
     }
 
-    /// Pins in `target` the sessions of `sessions` that are pinned in `source`, in the
-    /// source's order, after the target's own pins. Returns how many were added. The file
-    /// also holds MCP servers and settings, so a copy of it is kept next to it first and
-    /// every other key is left as it was. Only while the target is not running: Claude
-    /// writes this file back when it quits.
+    /// Pins the copied `sessions` that are pinned in `source` at the top of `target`'s sidebar, in
+    /// the source's sidebar order; the target's other pins follow. Written to Claude's own pin store
+    /// (closed account, backed up, verified), then to the mirrors: the config's pin list and
+    /// isStarred on the records. Mirror failures are ignored, as Claude rewrites them from its store
+    /// when it starts. Returns how many were carried; a source without a pin record carries nothing, and one
+    /// that cannot be read carries nothing and is logged through `logError` (fixed reason). Throws when the target is open or the store refuses; the copied chats stay.
     @discardableResult
-    public func carryPins(of sessions: [CodeSession], from source: Profile, to target: Profile, openFolders: [URL] = []) throws -> Int {
+    public func carryPins(of sessions: [CodeSession], from source: Profile, to target: Profile, openFolders: [URL] = [], backups: URL,
+                          logError: (String) -> Void) throws -> Int {
         let wanted = Set(sessions.map { "local_\($0.sessionID)" })
-        let existing = pins(of: target)
-        let add = pins(of: source).filter { wanted.contains($0) && !existing.contains($0) }
-        guard !add.isEmpty else { return 0 }
+        guard !wanted.isEmpty else { return 0 }
+        // The source may be open, so its files can end in a half-written entry.
+        let sourcePins: ClaudePins
+        do {
+            guard let pins = try ClaudePinStore.read(source, tolerateTornTail: true) else { return 0 }
+            sourcePins = pins
+        } catch {
+            logError("Pins for '\(target.name)' not carried: source pins unreadable")
+            return 0
+        }
+        var seen = Set<String>()
+        let carried = sourcePins.sidebar.filter { wanted.contains($0) && seen.insert($0).inserted }
+        guard !carried.isEmpty else { return 0 }
 
-        try writePins(existing + add, to: target, openFolders: openFolders,
-                      afterwards: L(" The chats were copied.", " Sohbetler kopyalandı."))
-        return add.count
+        if openFolders.contains(where: { ProfileStore.sameItem($0, target.path) }) {
+            throw SwitcherError(L("The profile is open; pins were not carried over.", "Profil açık; pinler taşınmadı."), logReason: "profile is open")
+        }
+        guard let targetPins = try ClaudePinStore.read(target, tolerateTornTail: false) else { throw PinSync.noPinRecord(target) }
+        let list = carried + targetPins.sidebar.filter { !seen.contains($0) }
+        _ = try ClaudePinStore.write(list, to: target, backups: backups)
+
+        if pins(of: target) != list { try? writePins(list, to: target, openFolders: openFolders) }
+        _ = setStarred(true, ids: carried, in: target)
+        return carried.count
     }
 
     /// Replaces the pin list in `target`'s claude_desktop_config.json, keeping every other key.
@@ -182,7 +255,7 @@ public struct ChatTransfer {
         // A shared (symlinked) config may live in another profile; that one must be closed
         // too, or its Claude writes the old list back over the change when it quits.
         let real = file.standardizedFileURL.path
-        if let owner = openFolders.first(where: { real.hasPrefix($0.resolvingSymlinksInPath().standardizedFileURL.path + "/") }) {
+        if let owner = openFolders.first(where: { ProfileStore.isInside(file, $0) }) {
             throw SwitcherError(L("The pins live in \(real), which belongs to the open profile at \(owner.path). Quit it and try again.\(afterwards)",
                                   "Pinler \(real) dosyasında, o da \(owner.path) konumundaki açık profile ait. Onu kapatıp tekrar deneyin.\(afterwards)"),
                                 logReason: "config belongs to an open profile")
@@ -197,10 +270,25 @@ public struct ChatTransfer {
                                       logReason: "config is not valid JSON")
             }
             root = parsed
-            try ChatTransfer.backUp(file)
         }
-        var preferences = (root["preferences"] as? [String: Any]) ?? [:]
-        var epitaxy = (preferences["epitaxyPrefs"] as? [String: Any]) ?? [:]
+        // A present value of the wrong type is a hand edit gone wrong; replacing it with a fresh
+        // object would silently drop what was there. Checked before the backup: nothing is written.
+        func unexpected(_ key: String) -> SwitcherError {
+            SwitcherError(L("\(file.path) has an unexpected '\(key)' value, so the pins were not written.\(afterwards)",
+                            "\(file.path) içindeki '\(key)' değeri beklenen biçimde değil, bu yüzden pinler yazılmadı.\(afterwards)"),
+                          logReason: "config has an unexpected shape")
+        }
+        var preferences: [String: Any] = [:]
+        if let value = root["preferences"] {
+            guard let object = value as? [String: Any] else { throw unexpected("preferences") }
+            preferences = object
+        }
+        var epitaxy: [String: Any] = [:]
+        if let value = preferences["epitaxyPrefs"] {
+            guard let object = value as? [String: Any] else { throw unexpected("epitaxyPrefs") }
+            epitaxy = object
+        }
+        if FileManager.default.fileExists(atPath: file.path) { try ChatTransfer.backUp(file) }
         epitaxy["starred-local-code-sessions"] = list
         preferences["epitaxyPrefs"] = epitaxy
         root["preferences"] = preferences
@@ -269,7 +357,9 @@ public struct ChatTransfer {
                            priorCLISessionIDs: (raw["priorCliSessionIds"] as? [String]) ?? [],
                            title: title, folder: folder, updated: updated,
                            hasTranscript: !cli.isEmpty && transcripts.contains(cli),
-                           worktreePath: (raw["worktreePath"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+                           worktreePath: (raw["worktreePath"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                           parentID: (raw["lineageDetached"] as? Bool) == true ? nil
+                               : ((raw["spawnedFrom"] as? [String: Any])?["sessionId"] as? String).flatMap { $0.isEmpty ? nil : $0 })
     }
 
     func subdirectories(_ dir: URL) -> [URL] {

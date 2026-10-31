@@ -9,9 +9,14 @@ APP="build/Claude Profile Switcher.app"
 BIN=ClaudeProfileSwitcher
 
 # Universal when the toolchain can (Xcode installed), the native architecture otherwise.
-if swift build -c release --arch arm64 --arch x86_64 >/dev/null 2>&1; then
+# Release builds (REQUIRE_UNIVERSAL=1) fail instead of quietly shipping one architecture.
+if [[ "${REQUIRE_UNIVERSAL:-}" == 1 ]]; then
+    swift build -c release --arch arm64 --arch x86_64
+    PRODUCT=".build/apple/Products/Release/$BIN"
+elif swift build -c release --arch arm64 --arch x86_64 >/dev/null 2>&1; then
     PRODUCT=".build/apple/Products/Release/$BIN"
 else
+    echo "warning: universal build failed; building for $(uname -m) only" >&2
     swift build -c release
     PRODUCT="$(swift build -c release --show-bin-path)/$BIN"
 fi

@@ -35,22 +35,8 @@ public struct ChatLinker {
 
     // MARK: Helpers
 
-    private static func canonical(_ url: URL) -> String { url.resolvingSymlinksInPath().standardizedFileURL.path }
-
     private func isOpen(_ profile: Profile) -> Bool {
-        let mine = ChatLinker.canonical(profile.path)
-        return openFolders().contains { ChatLinker.canonical($0) == mine }
-    }
-
-    /// The same file or folder: equal after resolving symlinks, or (both existing) the same device and inode,
-    /// which also catches a different spelling of the same folder on a case-insensitive volume.
-    static func sameItem(_ a: URL, _ b: URL) -> Bool {
-        if a.resolvingSymlinksInPath().standardizedFileURL.path == b.resolvingSymlinksInPath().standardizedFileURL.path { return true }
-        let fm = FileManager.default
-        guard let x = try? fm.attributesOfItem(atPath: a.path), let y = try? fm.attributesOfItem(atPath: b.path),
-              let xi = x[.systemFileNumber] as? NSNumber, let yi = y[.systemFileNumber] as? NSNumber,
-              let xd = x[.systemNumber] as? NSNumber, let yd = y[.systemNumber] as? NSNumber else { return false }
-        return xi == yi && xd == yd
+        openFolders().contains { ProfileStore.sameItem($0, profile.path) }
     }
 
     private static func norm(_ path: String) -> String {
@@ -160,7 +146,7 @@ public struct ChatLinker {
                 if case .ok(let r) = read { loserRoot = r }
             }
             let sameCwd = ChatLinker.norm(copy.cwd) == ChatLinker.norm(win.cwd)
-                || ChatLinker.sameItem(URL(fileURLWithPath: copy.cwd), URL(fileURLWithPath: win.cwd))
+                || ProfileStore.sameItem(URL(fileURLWithPath: copy.cwd), URL(fileURLWithPath: win.cwd))
             let held = winnerPath == nil || loserRoot.map { WorktreeLeases.holder(of: winnerPath!, in: $0) == chat.id } == true
             let already = sameCwd && held
             if !already && !win.hasTranscript {
@@ -184,7 +170,7 @@ public struct ChatLinker {
             }
             // The scan may be old: the loser's history must still be behind the winner's (or, for a fork the
             // user picked, still have just the messages the scan showed).
-            if !ChatLinker.sameItem(plan.copy.transcript, win.transcript), FileManager.default.fileExists(atPath: plan.copy.transcript.path) {
+            if !ProfileStore.sameItem(plan.copy.transcript, win.transcript), FileManager.default.fileExists(atPath: plan.copy.transcript.path) {
                 var fine = false
                 switch try? TranscriptDiff.compare(win.transcript, plan.copy.transcript) {
                 case .some(.identical), .some(.firstAhead): fine = true
@@ -219,10 +205,10 @@ public struct ChatLinker {
         // device and inode) was relinked in pass 2 or before; otherwise it stays for that copy. This depends on
         // the outcome of passes 1 and 2 only, never on the order of the accounts.
         let relinked = Set(report.linked)
-        for plan in written where !ChatLinker.sameItem(plan.copy.transcript, win.transcript) {
+        for plan in written where !ProfileStore.sameItem(plan.copy.transcript, win.transcript) {
             let stillUsed = chat.copies.contains { other in
                 other.profileID != plan.profile.id && other.profileID != win.profileID && other.hasTranscript
-                    && !relinked.contains(other.profileID) && ChatLinker.sameItem(other.transcript, plan.copy.transcript)
+                    && !relinked.contains(other.profileID) && ProfileStore.sameItem(other.transcript, plan.copy.transcript)
             }
             if stillUsed {
                 report.warnings[plan.profile.id] = L("Its old history file was kept where it is: another account's copy still uses it.",
@@ -363,7 +349,7 @@ public struct ChatLinker {
                     for file in transfer.records(in: org) {
                         guard let raw = transfer.readObject(file), file.deletingPathExtension().lastPathComponent == id || raw["sessionId"] as? String == id,
                               let cwd = raw["cwd"] as? String, !cwd.isEmpty else { continue }
-                        if !ChatLinker.sameItem(URL(fileURLWithPath: cwd), URL(fileURLWithPath: sourceCwd)) {
+                        if !ProfileStore.sameItem(URL(fileURLWithPath: cwd), URL(fileURLWithPath: sourceCwd)) {
                             return L("The copy in this account has its own history; use Sync in Shared chats.",
                                      "Bu hesaptaki kopyanın kendi geçmişi var; Ortak sohbetler'deki Eşitle'yi kullanın.")
                         }

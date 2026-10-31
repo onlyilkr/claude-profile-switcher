@@ -1,24 +1,37 @@
 import Foundation
 
 /*
-    Pins of the chats two profiles share. Claude keeps a profile's pins twice: the ordered
-    list in claude_desktop_config.json and isStarred on each chat's record, and the two sets
-    match. Before the switcher launches an account, the pins of the shared chats follow the
-    account that was used last: its order wins, the target keeps only its own pins for chats
-    the source does not have.
+    Pins of the chats two profiles share. Claude keeps an account's pins in its own store: the
+    pinned chats in the account's IndexedDB and their sidebar order in its Local Storage. As
+    observed, that store is the source of truth; claude_desktop_config.json and isStarred on
+    each chat's record are mirrors that Claude rewrites from it when it starts. Before the
+    switcher launches an account, the pins of the shared chats follow the account that was used
+    last: its order wins, and the target keeps only its own pins for chats the source does not
+    have. The store is written through ClaudePinStore (closed account, backed up, verified); the
+    mirrors are updated afterwards and never fail the sync.
 */
 
-public struct PinSyncPlan: Equatable {
+struct PinSyncPlan: Equatable {
     /// Profile id the pins come from.
-    public let source: String
-    /// The target's pin list afterwards.
-    public let newPins: [String]
+    let source: String
+    /// The target's sidebar pin list afterwards.
+    let newPins: [String]
     /// local_<id> of chats whose record gets isStarred = true.
-    public let star: [String]
+    let star: [String]
     /// local_<id> of chats whose record gets isStarred = false.
-    public let unstar: [String]
-    /// The target's pin list as the plan saw it; apply refuses when the file no longer holds it.
-    public let seenPins: [String]
+    let unstar: [String]
+    /// The target's pins as the plan saw them; apply refuses when the store no longer holds them.
+    let seen: ClaudePins
+}
+
+/// What planning found: `skipped` (the source's pins are unreadable or it has no pin record; the
+/// target was not read), `noChange` (the target was read and already matches) or a change to apply.
+enum PinSyncOutcome {
+    case skipped
+    case noChange
+    case change(PinSyncPlan)
+
+    var change: PinSyncPlan? { if case .change(let plan) = self { return plan }; return nil }
 }
 
 public enum PinSync {
@@ -41,54 +54,70 @@ public enum PinSync {
         return best?.0
     }
 
-    /// nil when nothing would change, or when the source's config exists but cannot be read
-    /// (an unreadable source must not unpin the target). `targetIDs` saves walking the target's
-    /// folders again when the caller already has them.
-    public static func plan(target: Profile, source: Profile, transfer: ChatTransfer, targetIDs: Set<String>? = nil) -> PinSyncPlan? {
-        let sourceConfig = ChatTransfer.configFile(source)
-        if FileManager.default.fileExists(atPath: sourceConfig.path), transfer.readObject(sourceConfig) == nil { return nil }
+    /// `.skipped` when the source's pins cannot be read or it has no pin record (missing data must
+    /// not unpin the target; an unreadable source is logged through `logError` with a fixed reason),
+    /// `.noChange` when nothing would change. Throws when the target has no pin record yet.
+    /// `targetIDs` saves walking the target's folders again when the caller already has them.
+    static func plan(target: Profile, source: Profile, transfer: ChatTransfer, targetIDs: Set<String>? = nil,
+                     logError: (String) -> Void) throws -> PinSyncOutcome {
+        // The source may be running, so its files can end in a half-written entry.
+        let sourcePins: ClaudePins
+        do {
+            guard let pins = try ClaudePinStore.read(source, tolerateTornTail: true) else { return .skipped }
+            sourcePins = pins
+        } catch {
+            logError("Pin sync for '\(target.name)' skipped: source pins unreadable")
+            return .skipped
+        }
+        guard let targetPins = try ClaudePinStore.read(target, tolerateTornTail: false) else { throw noPinRecord(target) }
         let sourceIDs = transfer.chatIDs(in: source)
         let targetIDs = targetIDs ?? transfer.chatIDs(in: target)
         let shared = sourceIDs.intersection(targetIDs)
-        let sourcePins = transfer.pins(of: source)
-        let targetPins = transfer.pins(of: target)
 
         var seen = Set<String>()
         var list: [String] = []
-        for pin in sourcePins where shared.contains(pin) && seen.insert(pin).inserted { list.append(pin) }
-        for pin in targetPins where !sourceIDs.contains(pin) && seen.insert(pin).inserted { list.append(pin) }
+        for pin in sourcePins.sidebar where shared.contains(pin) && seen.insert(pin).inserted { list.append(pin) }
+        for pin in targetPins.sidebar where !sourceIDs.contains(pin) && seen.insert(pin).inserted { list.append(pin) }
 
         // Records of shared chats are checked against the new list, so a run that stopped
-        // halfway (list written, some records not) is repaired the next time pins sync into this account.
+        // halfway (store written, some records not) is repaired the next time pins sync into this account.
         let after = Set(list)
         let states = transfer.recordStars(of: shared, in: target)
         let star = list.filter { shared.contains($0) && states[$0]?.contains(false) == true }
         let unstar = shared.filter { !after.contains($0) && states[$0]?.contains(true) == true }.sorted()
 
-        if list == targetPins && star.isEmpty && unstar.isEmpty { return nil }
-        return PinSyncPlan(source: source.id, newPins: list, star: star, unstar: unstar, seenPins: targetPins)
+        if list == targetPins.sidebar && targetPins.starred == list && star.isEmpty && unstar.isEmpty { return .noChange }
+        return .change(PinSyncPlan(source: source.id, newPins: list, star: star, unstar: unstar, seen: targetPins))
     }
 
-    /// Writes the list, then the records. Nothing is written when the target is open, the
-    /// pin list on disk is no longer what the plan saw, or the config cannot be parsed.
-    public static func apply(_ plan: PinSyncPlan, to target: Profile, transfer: ChatTransfer, openFolders: [URL]) throws {
-        let targetPath = target.path.resolvingSymlinksInPath().standardizedFileURL.path
-        if openFolders.contains(where: { $0.resolvingSymlinksInPath().standardizedFileURL.path == targetPath }) {
+    /// Writes Claude's pin store, then the mirrors. Nothing is written when the target is open or
+    /// its pins are no longer what the plan saw. Mirror failures go to `logError` (fixed reasons) and
+    /// do not fail the sync: Claude rewrites the mirrors from its store at startup.
+    static func apply(_ plan: PinSyncPlan, to target: Profile, transfer: ChatTransfer, openFolders: [URL], backups: URL,
+                      logError: (String) -> Void) throws {
+        if openFolders.contains(where: { ProfileStore.sameItem($0, target.path) }) {
             throw SwitcherError(L("The profile is open; pins were not synced.", "Profil açık; pinler eşitlenmedi."), logReason: "profile is open")
         }
-        guard transfer.pins(of: target) == plan.seenPins else {
+        guard try ClaudePinStore.read(target, tolerateTornTail: false) == plan.seen else {
             throw SwitcherError(L("The pins changed since they were read; pins were not synced.", "Pinler okunduktan sonra değişti; eşitlenmedi."),
                                 logReason: "pins changed since planning")
         }
-        // Records-only repair: the list is already right, so the config is not rewritten (and not backed up).
-        if plan.newPins != plan.seenPins { try transfer.writePins(plan.newPins, to: target, openFolders: openFolders) }
-        // The list is written; every record is tried, failures are reported once at the end.
-        let failed = transfer.setStarred(true, ids: plan.star, in: target) + transfer.setStarred(false, ids: plan.unstar, in: target)
-        if failed > 0 {
-            throw SwitcherError(L("The pin list was written, but \(failed) chat record(s) could not be updated; the next pin sync into this account retries.",
-                                  "Pin listesi yazıldı, ancak \(failed) sohbet kaydı güncellenemedi; bu hesaba bir sonraki pin eşitlemesinde yeniden denenir."),
-                                logReason: "\(failed) record(s) not updated")
+        _ = try ClaudePinStore.write(plan.newPins, to: target, backups: backups)
+
+        // Mirrors, also when the store was already right: a records-only repair still has to happen.
+        let name = target.name
+        if transfer.pins(of: target) != plan.newPins {
+            do { try transfer.writePins(plan.newPins, to: target, openFolders: openFolders) }
+            catch { logError("Pin sync for '\(name)': config mirror not updated") }
         }
+        let failed = transfer.setStarred(true, ids: plan.star, in: target) + transfer.setStarred(false, ids: plan.unstar, in: target)
+        if failed > 0 { logError("Pin sync for '\(name)': \(failed) record mirror(s) not updated") }
+    }
+
+    static func noPinRecord(_ profile: Profile) -> SwitcherError {
+        SwitcherError(L("Claude has not saved pins in '\(profile.name)' yet. Pin one chat there once, then pin sync can follow.",
+                        "Claude '\(profile.name)' hesabında henüz pin kaydetmedi. Orada bir sohbeti bir kez pinleyin, sonra pin eşitleme çalışır."),
+                      logReason: "no pin record yet")
     }
 }
 

@@ -15,15 +15,35 @@ public enum Badge {
     /// Assigned once and remembered: a hash of the name would regularly give two profiles
     /// the same colour, and a colour that changes later would defeat the point.
     public static func colorIndex(for id: String, settings: Settings, alive: [String]) -> Int {
-        var assigned = settings.colors
-        if let known = assigned[id] { return known % palette.count }
-        var use = [Int](repeating: 0, count: palette.count)
-        for (other, index) in assigned where alive.contains(other) { use[index % palette.count] += 1 }
-        var pick = 0
-        for i in 1..<use.count where use[i] < use[pick] { pick = i }
-        assigned[id] = pick
-        settings.set("Colors", assigned)
-        return pick
+        let n = palette.count
+        // Hand-edited values may be negative or too big, so every stored index is normalised.
+        func normalised(_ i: Int) -> Int { ((i % n) + n) % n }
+        func pick(from map: [String: Int]) -> Int {
+            var use = [Int](repeating: 0, count: n)
+            for (other, index) in map where alive.contains(other) { use[normalised(index)] += 1 }
+            var best = 0
+            for i in 1..<n where use[i] < use[best] { best = i }
+            return best
+        }
+        // The panel asks on every refresh: a known colour must not take the lock or rewrite the file.
+        let stored = settings.colors
+        if let known = stored[id] { return normalised(known) }
+        var picked = 0
+        // Picked inside the lock from the fresh map: another process may have just assigned this id.
+        // A colour that could not be saved is picked again next time; the badge still draws.
+        do {
+            try settings.update("Colors") { current in
+                var raw = (current as? [String: Any]) ?? [:]
+                let fresh = raw.compactMapValues { ($0 as? NSNumber)?.intValue }
+                if let known = fresh[id] { picked = normalised(known); return current }
+                picked = pick(from: fresh)
+                raw[id] = picked
+                return raw
+            }
+        } catch {
+            picked = pick(from: stored)
+        }
+        return picked
     }
 
     public static func letter(for label: String) -> String {
