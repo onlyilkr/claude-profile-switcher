@@ -128,6 +128,21 @@ final class ChatLinkerTests: XCTestCase {
         XCTAssertEqual(try ProfileClaims(file: paths.claimsFile, ownPID: getppid()).claimLaunch(lose.id) { nil }, .go)
     }
 
+    func testMovingTheOldHistoryFileHappensUnderTheAccountsClaimToo() throws {
+        try diverged()
+        let claims = claimsFile()
+        var claimed = 0
+        let l = ChatLinker(paths: paths, ledger: ledger(), live: { [] }, openFolders: { [] }, claim: { profiles in
+            claimed += 1
+            try claims.claimWriting(profiles) { _ in false }
+            return { claims.dropWriting(profiles) }
+        })
+        let report = try l.link(try chat(), winner: "Default", profiles: [win, lose])
+        XCTAssertEqual(report.linked, ["Two"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: transcript(loseCwd).path), "the old file was moved")
+        XCTAssertEqual(claimed, 2, "one claim for the records and leases, one for the history file move")
+    }
+
     func testALinkSkipsAnAccountThatIsStartingAndWritesNothingThere() throws {
         try diverged()
         let before = try Data(contentsOf: recordURL(lose))

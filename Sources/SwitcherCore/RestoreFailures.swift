@@ -6,6 +6,9 @@ import Foundation
 final class RestoreFailures {
     private let file: URL
     private let lockFile: URL
+    /// What this process has seen fail, so it keeps refusing the account even when the file could not be saved.
+    private var memory: [String: String] = [:]
+    private let memoryLock = NSLock()
 
     init(file: URL) {
         self.file = file
@@ -14,28 +17,39 @@ final class RestoreFailures {
 
     /// Profile id (lowercased) to backup folder path. Reads are lock-free: the file is replaced atomically.
     /// A damaged file reads as empty, like `claims.json`.
+    /// The file's entries plus those this process remembers.
     var all: [String: String] {
+        memoryLock.lock(); let mine = memory; memoryLock.unlock()
+        return onDisk.merging(mine) { disk, _ in disk }
+    }
+
+    private var onDisk: [String: String] {
         guard let data = try? Data(contentsOf: file) else { return [:] }
         return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
     }
 
     func backup(for id: String) -> String? { all[id.lowercased()] }
 
-    /// False when the marker could not be saved (the caller logs it).
+    /// Remembered in this process either way. False when the file could not be saved (the caller logs it).
     @discardableResult
-    func set(_ id: String, backup: String) -> Bool { update { $0[id.lowercased()] = backup } }
+    func set(_ id: String, backup: String) -> Bool {
+        memoryLock.lock(); memory[id.lowercased()] = backup; memoryLock.unlock()
+        return update { $0[id.lowercased()] = backup }
+    }
 
     @discardableResult
-    func clear(_ id: String) -> Bool { update { $0[id.lowercased()] = nil } }
+    func clear(_ id: String) -> Bool {
+        memoryLock.lock(); memory[id.lowercased()] = nil; memoryLock.unlock()
+        return update { $0[id.lowercased()] = nil }
+    }
 
     private func update(_ change: (inout [String: String]) -> Void) -> Bool {
         (try? FileLock.exclusively(lockFile) {
-            var current = all
+            var current = onDisk
             change(&current)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
-            do { try encoder.encode(current).write(to: file, options: .atomic) } catch { return false }
-            chmod(file.path, 0o600)
+            do { try FileLock.writePrivately(try encoder.encode(current), to: file) } catch { return false }
             return true
         }) ?? false
     }

@@ -77,6 +77,21 @@ final class SwitcherWritingTests: XCTestCase {
         XCTAssertTrue(sw.pinSyncProblems[profile.id]?.contains("/backup/place") == true, "and the panel shows it")
     }
 
+    func testASyncCountsAsRunningFromTheLaunchCallUntilItsCompletion() throws {
+        let (sw, profile) = try makeSwitcher()
+        sw.restoreFailures.set(profile.id, backup: "/backup/place")
+        XCTAssertFalse(sw.pinSyncRunning)
+        let done = expectation(description: "completion")
+        var idle = 0
+        sw.onPinSyncIdle = { idle += 1 }
+        sw.launch(profile) { _ in done.fulfill() }
+        XCTAssertTrue(sw.pinSyncRunning, "true as soon as launch returns, so a waiting CLI or a quitting app sees it")
+        wait(for: [done], timeout: 10)
+        XCTAssertFalse(sw.pinSyncRunning)
+        XCTAssertEqual(idle, 1)
+        XCTAssertEqual(sw.restoreBlocked, [profile.id])
+    }
+
     func testTwoAccountsWithTheSameRefusalGetDistinctNotes() throws {
         let a = Profile(id: "a", name: "Alpha", path: dir.appendingPathComponent("a"))
         let b = Profile(id: "b", name: "Beta", path: dir.appendingPathComponent("b"))

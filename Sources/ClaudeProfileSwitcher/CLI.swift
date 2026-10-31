@@ -228,8 +228,12 @@ enum CLI {
     static func launch(_ sw: Switcher, _ target: Profile, link: String? = nil) throws {
         var outcome: Result<Switcher.LaunchResult, Error>?
         sw.launch(target, link: link) { outcome = $0 }
-        let until = Date().addingTimeInterval(30)
-        while outcome == nil, Date() < until {
+        // The pin sync can take as long as it takes (and must not be cut off between its two writes); the 30 s
+        // for Launch Services start once it is over.
+        var until: Date?
+        while outcome == nil {
+            if sw.pinSyncRunning { until = nil } else if until == nil { until = Date().addingTimeInterval(30) }
+            if let until, Date() >= until { break }
             RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.1))
         }
         switch outcome {

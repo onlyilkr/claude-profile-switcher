@@ -232,7 +232,7 @@ public struct ChatLinker {
                                                      "Eski geçmiş dosyası yerinde bırakıldı: başka bir hesabın kopyası hâlâ onu kullanıyor.")
                 continue
             }
-            do { try moveToBackup(plan.copy, cli: chat.cliSessionID, profileID: plan.profile.id, stamp: stamp) } catch {
+            do { try writing(plan.profile) { try moveToBackup(plan.copy, cli: chat.cliSessionID, profileID: plan.profile.id, stamp: stamp) } } catch {
                 report.warnings[plan.profile.id] = L("Linked, but its old history file could not be moved: \(error.localizedDescription)",
                                                      "Bağlandı, ama eski geçmiş dosyası taşınamadı: \(error.localizedDescription)")
             }

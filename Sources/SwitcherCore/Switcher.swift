@@ -109,25 +109,42 @@ public final class Switcher {
         case .go:
             break
         }
-        // The sync scans LevelDB files and copies a backup: off the main thread, with the starting claim held
-        // (and marked busy) the whole time. Claude opens, and the completion runs, back on the main thread.
+        // The sync scans LevelDB files and copies a backup: off the main thread, one at a time, with the starting
+        // claim held (and marked busy from now, also while it waits its turn). Claude opens, and the completion
+        // runs, back on the main thread.
         let syncOn = settings.syncPins
-        DispatchQueue.global(qos: .userInitiated).async {
-            // The starting claim counts as fresh for as long as this runs, so a second launch cannot slip in.
-            self.claims.setSyncing(target.id, true)
+        claims.setSyncing(target.id, true)
+        beginSync()
+        Switcher.syncQueue.async {
             // A failed restore leaves the account's data in doubt: Claude must not start on it, with or without pin sync.
             let stop = self.refuseAfterFailedRestore(target) ?? (syncOn ? self.syncPinsBeforeLaunch(target) : nil)
             self.claims.setSyncing(target.id, false)
             DispatchQueue.main.async {
+                self.endSync()
                 if let stop {
                     self.claims.dropStarting(target.id)
                     completion?(.failure(stop))
-                    return
+                } else {
+                    self.openClaude(target, link: link, expectSignIn: expectSignIn, completion: completion)
                 }
-                self.openClaude(target, link: link, expectSignIn: expectSignIn, completion: completion)
+                if !self.pinSyncRunning { self.onPinSyncIdle?() }
             }
         }
     }
+
+    /// Pin syncs run one at a time, so two launches never read each other's half-written stores.
+    private static let syncQueue = DispatchQueue(label: "ClaudeProfileSwitcher.pinsync", qos: .userInitiated)
+    private let syncCount = NSLock()
+    private var syncs = 0
+    private func beginSync() { syncCount.lock(); syncs += 1; syncCount.unlock() }
+    private func endSync() { syncCount.lock(); syncs -= 1; syncCount.unlock() }
+
+    /// True from a launch call until its sync is over and its result handled: a command line waits on it, and the
+    /// app delays quitting, so a write is not cut off between its two databases.
+    public var pinSyncRunning: Bool { syncCount.lock(); defer { syncCount.unlock() }; return syncs > 0 }
+
+    /// Called on the main thread whenever the last running sync has been handled.
+    public var onPinSyncIdle: (() -> Void)?
 
     /// The last step of a launch: the pin sync is over and the starting claim is held.
     private func openClaude(_ target: Profile, link: String?, expectSignIn: Bool, completion: ((Result<LaunchResult, Error>) -> Void)?) {
@@ -182,6 +199,30 @@ public final class Switcher {
         return SwitcherError(note, logReason: "pin store restore pending", detail: backup)
     }
 
+    /// Remembers a failed restore, whoever hit it (a launch's sync or a transfer's pins): the marker, the panel
+    /// note and a fixed log line. False when `error` is not a failed restore.
+    @discardableResult
+    static func recordRestoreFailure(_ error: Error, target: Profile, restoreFailures: RestoreFailures, problem: (String, String?) -> Void,
+                                     logError: (String) -> Void) -> Bool {
+        guard let e = error as? SwitcherError, e.logReason == "pin store restore failed", let backup = e.detail else { return false }
+        if !restoreFailures.set(target.id, backup: backup) { logError("Pin store restore marker for '\(target.name)' could not be saved") }
+        problem(target.id, restoreNote(target, backup: backup))
+        return true
+    }
+
+    /// For callers outside a launch (the chat transfer): remembers a failed restore so the account stays closed.
+    @discardableResult
+    public func noteRestoreFailure(_ error: Error, target: Profile) -> Bool {
+        Switcher.recordRestoreFailure(error, target: target, restoreFailures: restoreFailures, problem: { self.pinSyncNotes.set($0, $1) },
+                                      logError: { self.logError($0) })
+    }
+
+    /// Ids of accounts whose pin store was not restored: their note stays whatever the pin sync setting is.
+    public var restoreBlocked: Set<String> {
+        let ids = restoreFailures.all.keys
+        return Set(store.list(status: false).filter { ids.contains($0.id.lowercased()) }.map(\.id))
+    }
+
     static func restoreNote(_ target: Profile, backup: String) -> String {
         L("'\(target.name)' was not opened: its Claude data could not be restored after a failed pin sync, and Claude must not start on it. Your backup is in \(backup). Claude was not started, so its data is not reset.",
           "'\(target.name)' açılmadı: başarısız bir pin eşitlemesinden sonra Claude verisi geri yüklenemedi ve Claude bu veriyle başlamamalı. Yedeğiniz şurada: \(backup). Claude başlatılmadı, böylece verisi sıfırlanmadı.")
@@ -230,10 +271,7 @@ public final class Switcher {
             logError("Pin sync for '\(target.name)' failed: \(reason)")
             if let e = error as? SwitcherError, e.logReason == "pin store restore failed" {
                 // Remembered across launches and processes: the account stays closed until its store reads clean.
-                if let backup = e.detail {
-                    if !restoreFailures.set(target.id, backup: backup) { logError("Pin store restore marker for '\(target.name)' could not be saved") }
-                    problem(target.id, restoreNote(target, backup: backup))
-                }
+                recordRestoreFailure(e, target: target, restoreFailures: restoreFailures, problem: problem, logError: logError)
                 return e
             }
         }

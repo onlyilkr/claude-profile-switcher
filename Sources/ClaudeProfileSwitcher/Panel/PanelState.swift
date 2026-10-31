@@ -176,4 +176,6 @@ final class PanelState: ObservableObject {
 struct PinSyncNote: Identifiable, Equatable {
     let id: String
     let text: String
+    /// The account is kept closed after a failed pin restore: shown whether or not pin sync is on.
+    let restoreBlock: Bool
 }

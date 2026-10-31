@@ -147,7 +147,6 @@ public final class ProfileClaims {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys]
-        try encoder.encode(live).write(to: file, options: .atomic)
-        chmod(file.path, 0o600)
+        try FileLock.writePrivately(try encoder.encode(live), to: file)
     }
 }

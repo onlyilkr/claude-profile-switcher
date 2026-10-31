@@ -55,6 +55,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sharedChatsModel.linkAll = { [weak self] in self?.linkAll() }
     }
 
+    /// A pin sync writes two databases one after the other; quitting waits for it so the pair is never cut off.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let sw = switcher, sw.pinSyncRunning else { return .terminateNow }
+        sw.onPinSyncIdle = { NSApp.reply(toApplicationShouldTerminate: true) }
+        return .terminateLater
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Claude takes claude:// back each time a copy starts. Two cheap reads per tick;
         // anything is written only when the handler was actually lost.
@@ -129,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let linking = sw.settings["LinkWorktreeChats"] as? Bool == true
         set(\.linkChats, linking)
         set(\.syncPins, sw.settings.syncPins)
-        set(\.pinSyncProblems, sw.pinSyncProblems.sorted { $0.key < $1.key }.map { PinSyncNote(id: $0.key, text: $0.value) })
+        set(\.pinSyncProblems, { let blocked = sw.restoreBlocked; return sw.pinSyncProblems.sorted { $0.key < $1.key }.map { PinSyncNote(id: $0.key, text: $0.value, restoreBlock: blocked.contains($0.key)) } }())
         updateOpenTwiceTimer()
         if sharedChatsModel.linkEnabled != linking { sharedChatsModel.linkEnabled = linking }
         set(\.showRoutingBanner, sw.settings.signInRouting == nil && profiles.count > 1)
@@ -230,6 +237,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sw.launch(p, expectSignIn: !fromURL) { [weak self] result in
             if case .failure(let error) = result {
                 self?.opening[p.id] = nil
+                self?.report(L("Could not open '\(p.name)': \(error.localizedDescription)", "'\(p.name)' açılamadı: \(error.localizedDescription)"))
+            }
+        }
+    }
+
+    /// Opens an account again after the switcher closed it; a refusal (a failed pin restore, a write in progress) is reported, not silent.
+    private func reopen(_ p: Profile) {
+        switcher?.launch(p) { [weak self] result in
+            if case .failure(let error) = result {
                 self?.report(L("Could not open '\(p.name)': \(error.localizedDescription)", "'\(p.name)' açılamadı: \(error.localizedDescription)"))
             }
         }
@@ -480,7 +496,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             guard quitOK else {
                 self.sharedChatsModel.busy = false
-                closed.forEach { sw.launch($0) }
+                closed.forEach { self.reopen($0) }
                 self.alert(L("'\(toQuit.first { sw.store.isRunning($0) != nil }?.name ?? "")' is still open", "'\(toQuit.first { sw.store.isRunning($0) != nil }?.name ?? "")' hâlâ açık"),
                            L("Quit it from its Claude menu, then try again.", "Claude menüsünden çıkın, sonra tekrar deneyin."), style: .warning)
                 return
@@ -510,7 +526,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             }
                         }
                     }
-                    closed.forEach { sw.launch($0) }
+                    closed.forEach { self.reopen($0) }
                     if !problems.isEmpty { self.report(problems.joined(separator: "\n")) }
                     if done.count == 1 {
                         self.alert(L("Linked", "Bağlandı"),
@@ -656,6 +672,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var store: TargetStore?
             var copied = 0, there = 0, pinned = 0
             var skipped: [String] = []
+            var restoreFailed = false
             var copiedSessions: [CodeSession] = []
             var thereSessions: [CodeSession] = []
         }
@@ -684,6 +701,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         o.pinned = try sw.transfer.carryPins(of: o.copiedSessions, from: source, to: target, openFolders: open,
                                                     backups: sw.paths.pinStoreBackups, logError: { sw.logError($0) })
                     } catch {
+                        // A failed restore keeps the account closed: remembered, and the transfer does not reopen it.
+                        if sw.noteRestoreFailure(error, target: target) { o.restoreFailed = true }
                         sw.logError("Pins for '\(target.name)' not carried: \((error as? SwitcherError)?.logReason ?? Switcher.describe(error))")
                         o.skipped.append(L("Pins were not carried over: \(error.localizedDescription)", "Pinler taşınamadı: \(error.localizedDescription)"))
                     }
@@ -697,7 +716,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return
             }
-            DispatchQueue.main.async { self?.continueCopy(outcome.store, source: source, target: target, relaunch: relaunch,
+            DispatchQueue.main.async { self?.continueCopy(outcome.store, source: source, target: target, relaunch: relaunch && !outcome.restoreFailed,
                                                           copied: outcome.copied, there: outcome.there, pinned: outcome.pinned, skipped: outcome.skipped,
                                                           copiedSessions: outcome.copiedSessions, thereSessions: outcome.thereSessions) }
         }
@@ -711,7 +730,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert(L("Not ready yet", "Henüz hazır değil"),
                   L("'\(target.name)' has not used Claude Code yet, so there is nowhere to put the chats.\n\nOpen it, sign in, visit the Code tab once, then try again.",
                     "'\(target.name)' henüz Claude Code kullanmadı, sohbetleri koyacak yer yok.\n\nAçın, giriş yapın, Code sekmesine bir kez girin ve tekrar deneyin."))
-            if relaunch { sw.launch(target) }
+            if relaunch { reopen(target) }
             return
         }
         if copied > 0 { scanSharedChats() }
@@ -804,11 +823,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let showButton = notes.isEmpty ? nil : L("Show shared chats", "Ortak sohbetleri göster")
         if relaunch {
             if choose(L("Chats copied", "Sohbetler kopyalandı"), text, buttons: [L("OK", "Tamam")] + [showButton].compactMap { $0 }) == 1 { openSharedChats() }
-            sw.launch(target)
+            reopen(target)
         } else if copied + pinned > 0 {
             let pick = choose(L("Chats copied", "Sohbetler kopyalandı"), text + "\n\n" + L("Open '\(target.name)' now?", "'\(target.name)' şimdi açılsın mı?"),
                               buttons: [L("Open", "Aç"), L("Later", "Sonra")] + [showButton].compactMap { $0 })
-            if pick == 0 { sw.launch(target) } else if pick == 2 { openSharedChats() }
+            if pick == 0 { reopen(target) } else if pick == 2 { openSharedChats() }
         } else {
             if choose(L("Nothing copied", "Hiçbir şey kopyalanmadı"), text, buttons: [L("OK", "Tamam")] + [showButton].compactMap { $0 }) == 1 { openSharedChats() }
         }

@@ -445,6 +445,39 @@ final class PinSyncTests: XCTestCase {
         XCTAssertTrue(errors.isEmpty)
     }
 
+    func testARestoreFailureInATransferIsRemembered() throws {
+        defer { ClaudePinStore.beforeIndexedDBWrite = nil }
+        let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
+        let t = try profile("T", chats: ["local_a"], pins: [])
+        ClaudePinStore.beforeIndexedDBWrite = {
+            let log = ClaudeStoreFixture.idbFolder(t).appendingPathComponent("000003.log")
+            let h = try FileHandle(forWritingTo: log); defer { try? h.close() }
+            try h.seekToEnd(); try h.write(contentsOf: Data([1, 2, 3]))
+            try FileManager.default.removeItem(at: self.backupsDir)
+            try FileManager.default.createDirectory(at: self.backupsDir, withIntermediateDirectories: true)
+        }
+        let session = CodeSession(file: home.appendingPathComponent("local_a.json"), sessionID: "a", cliSessionID: "ca", priorCLISessionIDs: [],
+                                  title: "a", folder: "", updated: Date(), hasTranscript: true)
+        var thrown: Error?
+        do { _ = try transfer.carryPins(of: [session], from: s, to: t, backups: backupsDir, logError: { _ in }) } catch { thrown = error }
+        let error = try XCTUnwrap(thrown as? SwitcherError)
+        var notes = [String?](), logged = [String]()
+        XCTAssertTrue(Switcher.recordRestoreFailure(error, target: t, restoreFailures: markers, problem: { notes.append($1) }, logError: { logged.append($0) }))
+        XCTAssertEqual(markers.backup(for: "T"), error.detail)
+        XCTAssertNotNil(Switcher.restoreGate(target: t, restoreFailures: markers, problem: { _, _ in }, logError: { _ in }), "the next launch is refused")
+        XCTAssertFalse(Switcher.recordRestoreFailure(SwitcherError("x", logReason: "profile is open"), target: t, restoreFailures: markers, problem: { _, _ in }, logError: { _ in }))
+    }
+
+    func testAMarkerThatCannotBeSavedIsStillKeptByThisProcess() throws {
+        let blocker = home.appendingPathComponent("a-file")
+        try Data().write(to: blocker)
+        let m = RestoreFailures(file: blocker.appendingPathComponent("restore-failed.json"))   // a folder cannot be made under a file
+        XCTAssertFalse(m.set("T", backup: "/b"))
+        XCTAssertEqual(m.backup(for: "T"), "/b", "remembered in memory")
+        m.clear("T")
+        XCTAssertNil(m.backup(for: "T"))
+    }
+
     func testAnAccountWithoutAMarkerIsNeverGated() throws {
         let t = try profile("T", chats: [], pins: [], lsVersion: "2")   // unusable for pins, but no failed restore
         XCTAssertNil(Switcher.restoreGate(target: t, restoreFailures: markers, problem: { _, _ in XCTFail() }, logError: { _ in XCTFail() }))

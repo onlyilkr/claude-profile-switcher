@@ -17,3 +17,19 @@ public enum FileLock {
         return try body()
     }
 }
+
+extension FileLock {
+    /// Replaces `file` atomically with `data`, the temp file created owner-only (0600) so the content is never
+    /// readable by others, not even between the write and the rename.
+    static func writePrivately(_ data: Data, to file: URL) throws {
+        let temp = file.deletingLastPathComponent().appendingPathComponent(".\(file.lastPathComponent).\(UUID().uuidString).tmp")
+        guard FileManager.default.createFile(atPath: temp.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+            throw SwitcherError(String(cString: strerror(errno)))
+        }
+        if rename(temp.path, file.path) != 0 {
+            let message = String(cString: strerror(errno))
+            try? FileManager.default.removeItem(at: temp)
+            throw SwitcherError(message)
+        }
+    }
+}

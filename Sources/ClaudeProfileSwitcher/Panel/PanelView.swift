@@ -436,13 +436,20 @@ struct SettingsSection: View {
                                     "Bir hesap açılırken, en son kullandığınız hesapla ortak sohbetlerin pinleri o hesaptaki sırayla gelir."),
                           isOn: Binding(get: { state.syncPins }, set: { state.actions.setSyncPins($0) }))
                 if state.syncPins {
-                    ForEach(state.pinSyncProblems) { problem in
+                    ForEach(state.pinSyncProblems.filter { !$0.restoreBlock }) { problem in
                         Text(problem.text)
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+            }
+            // An account kept closed after a failed pin restore, with or without pin sync.
+            ForEach(state.pinSyncProblems.filter(\.restoreBlock)) { problem in
+                Text(problem.text)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             ToggleRow(title: L("Open at login", "Oturum açılışında başlat"), detail: nil,
                       isOn: Binding(get: { state.loginItem }, set: { state.actions.setLogin($0) }))
