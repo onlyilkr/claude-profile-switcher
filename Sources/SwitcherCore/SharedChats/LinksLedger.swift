@@ -43,17 +43,7 @@ public final class LinksLedger {
     /// app and the command line (and several ledger instances) never lose each other's records.
     private func exclusively<T>(_ body: () throws -> T) throws -> T {
         lock.lock(); defer { lock.unlock() }
-        let dir = file.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let fd = open(file.path + ".lock", O_RDWR | O_CREAT, 0o600)
-        guard fd >= 0 else { throw SwitcherError(String(cString: strerror(errno))) }
-        defer { close(fd) }
-        fchmod(fd, 0o600)
-        while flock(fd, LOCK_EX) != 0 {
-            if errno != EINTR { throw SwitcherError(String(cString: strerror(errno))) }
-        }
-        defer { flock(fd, LOCK_UN) }
-        return try body()
+        return try FileLock.exclusively(URL(fileURLWithPath: file.path + ".lock"), body)
     }
 
     public func append(_ r: [LinkRecord]) throws {

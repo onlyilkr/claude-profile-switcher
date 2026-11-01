@@ -102,6 +102,9 @@ final class PanelState: ObservableObject {
     @Published var loginItem = false
     @Published var linkChats = false
     @Published var syncPins = true
+    /// Why pin sync is refused for a lasting reason, shown under its toggle; nil when there is none.
+    /// One note per account (the account's id is the stable identity of a row).
+    @Published var pinSyncProblems: [PinSyncNote] = []
     @Published var showRoutingBanner = false
     @Published var errorMessage: String?
     /// Hidden until every open account is measured again, then shown the next time.
@@ -168,4 +171,11 @@ final class PanelState: ObservableObject {
         renameError = nil
         deletingID = nil
     }
+}
+
+struct PinSyncNote: Identifiable, Equatable {
+    let id: String
+    let text: String
+    /// The account is kept closed after a failed pin restore: shown whether or not pin sync is on.
+    let restoreBlock: Bool
 }

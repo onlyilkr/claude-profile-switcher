@@ -87,13 +87,16 @@ enum CLI {
         let paths = options["--home"].map { Paths(home: URL(fileURLWithPath: $0)) } ?? Paths()
         // Works without Claude, so routing can be turned off after Claude was removed.
         if switches.contains("--revert") {
-            let done = Switcher.disableRouting(paths: paths, ownBundleID: appBundle.bundleIdentifier ?? "io.github.onlyilkr.ClaudeProfileSwitcher")
-            print(done.isEmpty ? "Nothing to put back: sign-in routing had not changed anything." : done.map { "- \($0)" }.joined(separator: "\n"))
-            return 0
+            let (done, failures) = Switcher.disableRouting(paths: paths, ownBundleID: appBundle.bundleIdentifier ?? "io.github.onlyilkr.ClaudeProfileSwitcher")
+            print(done.isEmpty && failures.isEmpty ? "Nothing to put back: sign-in routing had not changed anything." : done.map { "- \($0)" }.joined(separator: "\n"))
+            for line in failures { FileHandle.standardError.write(Data("- \(line)\n".utf8)) }
+            return failures.isEmpty ? 0 : 1
         }
         let sw: Switcher
         do { sw = try Switcher(paths: paths, ownBundleID: appBundle.bundleIdentifier, claudePath: options["--claude-path"]) } catch { return fail(error.localizedDescription) }
-        if options["--claude-path"] != nil { sw.settings.set("ClaudePath", sw.claude.url.path) }
+        if options["--claude-path"] != nil {
+            do { try sw.settings.set("ClaudePath", sw.claude.url.path) } catch { return fail(error.localizedDescription) }
+        }
 
         do {
             if switches.contains("--list") { list(sw); return 0 }
@@ -101,7 +104,7 @@ enum CLI {
             if switches.contains("--shared-chats") { sharedChats(sw); return 0 }
             if switches.contains("--unlink-chats") { return unlinkChats(sw) }
             if switches.contains("--route-sign-ins") {
-                sw.enableRouting()
+                try sw.enableRouting()
                 print("Sign-in routing is on. Browser sign-ins now go to the account that asked for them.")
                 if !menuBarAppRunning(sw) {
                     print("Keep the menu bar app running: Claude takes claude:// links back each time it starts, and the app takes them again.")
@@ -110,12 +113,12 @@ enum CLI {
             }
             if let name = options["--open-links-in"] {
                 if name.caseInsensitiveCompare(Profile.defaultID) == .orderedSame {
-                    sw.settings.set("OpenLinksIn", nil)
+                    try sw.settings.set("OpenLinksIn", nil)
                     print("claude:// links that are not sign-ins open in Default again.")
                     return 0
                 }
                 let target = try resolve(sw, name)
-                sw.settings.set("OpenLinksIn", target.id)
+                try sw.settings.set("OpenLinksIn", target.id)
                 print("claude:// links that are not sign-ins now open in '\(target.name)'.")
                 if !sw.routingOn { print("That takes effect once sign-in routing is on (--route-sign-ins).") }
                 return 0
@@ -168,7 +171,8 @@ enum CLI {
         print("Claude:           \(sw.claude.url.path) (\(sw.claude.version))")
         print("Sign-in routing:  \(sw.routerStateText)")
         print("claude:// opens:  \(LinkHandler.current(scheme: "claude") ?? "nothing")")
-        print("Pending sign-in:  \(sw.pending.get() ?? "none")")
+        let waiting = sw.pending.get()
+        print("Pending sign-in:  \(waiting.isEmpty ? "none" : waiting.joined(separator: ", "))")
         print("Other links:      open in '\(sw.otherLinkTarget()?.name ?? Profile.defaultID)'")
         print("Router log:       \(sw.paths.routerLog.path)")
         print("")
@@ -203,7 +207,7 @@ enum CLI {
     static func unlinkChats(_ sw: Switcher) -> Int32 {
         let ledger = LinksLedger(file: sw.paths.switcherHome.appendingPathComponent("links.json"))
         do { try ledger.ensureReadable() } catch { return fail(error.localizedDescription) }
-        let linker = ChatLinker(paths: sw.paths, ledger: ledger, openFolders: { sw.openFolders() })
+        let linker = ChatLinker(paths: sw.paths, ledger: ledger, openFolders: { sw.openFolders() }, claim: { try sw.claimForWriting($0) })
         let report = linker.unlink(sessionID: nil, profiles: sw.store.list(status: false))
         print("Removed \(report.removed) link(s).")
         for item in report.skipped { print("Skipped: \(item)") }
@@ -224,14 +228,24 @@ enum CLI {
     static func launch(_ sw: Switcher, _ target: Profile, link: String? = nil) throws {
         var outcome: Result<Switcher.LaunchResult, Error>?
         sw.launch(target, link: link) { outcome = $0 }
-        let until = Date().addingTimeInterval(30)
-        while outcome == nil, Date() < until {
+        // The pin sync can take as long as it takes (and must not be cut off between its two writes); the 30 s
+        // for Launch Services start once it is over.
+        // A sync that has not ended after 5 minutes is stuck: give up rather than wait forever.
+        var until: Date?
+        let syncLimit = Date().addingTimeInterval(300)
+        var syncStuck = false
+        while outcome == nil {
+            if sw.pinSyncRunning { until = nil } else if until == nil { until = Date().addingTimeInterval(30) }
+            if let until, Date() >= until { break }
+            if until == nil, Date() >= syncLimit { syncStuck = true; break }
             RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.1))
         }
         switch outcome {
         case .success(.focused)?: print("Brought '\(target.name)' forward.")
         case .success?: break
         case .failure(let error)?: throw SwitcherError("Could not open '\(target.name)': \(error.localizedDescription)")
+        case nil where syncStuck:
+            throw SwitcherError("Could not open '\(target.name)': the pin sync did not finish within 5 minutes.")
         case nil: throw SwitcherError("Could not open '\(target.name)': macOS did not answer within 30 seconds.")
         }
     }
@@ -240,10 +254,12 @@ enum CLI {
     /// bar app to take it back, a command line launch stays a little while to do it.
     static func retakeWhileStarting(_ sw: Switcher) {
         guard sw.routingOn, !menuBarAppRunning(sw) else { return }
-        let until = Date().addingTimeInterval(20)
-        while Date() < until {
+        FileHandle.standardError.write(Data((L("Keeping the claude:// handler while Claude starts (up to 20 s); the menu bar app does this when it runs.", "Claude başlarken claude:// işleyicisi korunuyor (en fazla 20 sn); menü çubuğu uygulaması çalışırken bunu o yapar.") + "\n").utf8))
+        let start = Date()
+        var lastRetake: Date?
+        while !RetakeWait.done(start: start, lastRetake: lastRetake, now: Date()) {
             RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(1))
-            sw.retakeRouterIfNeeded()
+            if sw.retakeRouterIfNeeded() { lastRetake = Date() }
         }
     }
 

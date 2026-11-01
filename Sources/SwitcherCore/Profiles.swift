@@ -47,6 +47,29 @@ public final class ProfileStore {
         return "path:" + path.lowercased()
     }
 
+    /// The same file or folder: equal after resolving symlinks, or (both existing) the same device and inode,
+    /// which also catches a different spelling of the same folder on a case-insensitive volume.
+    public static func sameItem(_ a: URL, _ b: URL) -> Bool {
+        if a.resolvingSymlinksInPath().standardizedFileURL.path == b.resolvingSymlinksInPath().standardizedFileURL.path { return true }
+        let fm = FileManager.default
+        guard let x = try? fm.attributesOfItem(atPath: a.path), let y = try? fm.attributesOfItem(atPath: b.path),
+              let xi = x[.systemFileNumber] as? NSNumber, let yi = y[.systemFileNumber] as? NSNumber,
+              let xd = x[.systemNumber] as? NSNumber, let yd = y[.systemNumber] as? NSNumber else { return false }
+        return xi == yi && xd == yd
+    }
+
+    /// Whether `file` (after resolving its symlinks) lies inside `folder`, compared by identity
+    /// so a differently-spelled path to the same folder still counts.
+    public static func isInside(_ file: URL, _ folder: URL) -> Bool {
+        var ancestor = file.resolvingSymlinksInPath().standardizedFileURL
+        while true {
+            if sameItem(ancestor, folder) { return true }
+            // "/" has no parent: deletingLastPathComponent would go on to "/../" forever.
+            if ancestor.path == "/" { return false }
+            ancestor = ancestor.deletingLastPathComponent()
+        }
+    }
+
     public static func runningMap(bundleID: String, defaultFolder: URL) -> [String: pid_t] {
         var map: [String: pid_t] = [:]
         for instance in ProcessScanner.claudeInstances(bundleID: bundleID) {
@@ -164,7 +187,7 @@ public final class ProfileStore {
         if let problem = validateName(newName, exceptID: profile.id) { throw SwitcherError(problem) }
         // The label lives in settings.json; when that cannot be saved, nothing may pretend it was.
         if let problem = settings.problem { throw SwitcherError(problem) }
-        settings.setLabel(profile.id, newName)
+        try settings.setLabel(profile.id, newName)
         return Profile(id: profile.id, name: newName, path: profile.path, pid: profile.pid, lastUsed: profile.lastUsed)
     }
 
@@ -182,10 +205,17 @@ public final class ProfileStore {
         if isRunning(profile) != nil {
             throw SwitcherError(L("Quit '\(profile.name)' before deleting it.", "Silmeden önce '\(profile.name)' uygulamasından çıkın."))
         }
+        // Checked before the folder goes to the Trash: afterwards the label could not be removed.
+        if let problem = settings.problem { throw SwitcherError(problem) }
         if FileManager.default.fileExists(atPath: profile.path.path) {
             try remove(profile.path)
         }
-        settings.setLabel(profile.id, nil)
-        settings.forgetColor(profile.id)
+        do {
+            try settings.setLabel(profile.id, nil)
+            try settings.forgetColor(profile.id)
+        } catch {
+            throw SwitcherError(L("'\(profile.name)' was moved to the Trash, but its label could not be removed: \(error.localizedDescription)",
+                                  "'\(profile.name)' Çöp Kutusu'na taşındı, ancak etiketi kaldırılamadı: \(error.localizedDescription)"))
+        }
     }
 }

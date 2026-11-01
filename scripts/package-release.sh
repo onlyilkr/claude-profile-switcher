@@ -14,7 +14,7 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
     exit 2
 fi
 
-VERSION="$VERSION" scripts/build-app.sh
+REQUIRE_UNIVERSAL=1 VERSION="$VERSION" scripts/build-app.sh
 rm -rf dist
 mkdir -p dist
 ZIP="Claude-Profile-Switcher-$VERSION.zip"

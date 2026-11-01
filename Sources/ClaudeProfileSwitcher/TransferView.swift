@@ -6,17 +6,22 @@ struct TransferView: View {
     let sourceName: String
     let sessions: [CodeSession]
     let targets: [Profile]
+    /// The parent chats of the picked ones that the target lacks, farthest first.
+    let ancestors: ([CodeSession], Profile) -> [CodeSession]
     let onCancel: () -> Void
     let onCopy: ([CodeSession], Profile) -> Void
 
     @State private var selected: Set<String> = []
     @State private var targetID: String
+    @State private var withAncestors = true
 
     init(sourceName: String, sessions: [CodeSession], targets: [Profile],
+         ancestors: @escaping ([CodeSession], Profile) -> [CodeSession],
          onCancel: @escaping () -> Void, onCopy: @escaping ([CodeSession], Profile) -> Void) {
         self.sourceName = sourceName
         self.sessions = sessions
         self.targets = targets
+        self.ancestors = ancestors
         self.onCancel = onCancel
         self.onCopy = onCopy
         _targetID = State(initialValue: targets.first?.id ?? "")
@@ -29,8 +34,16 @@ struct TransferView: View {
         return f
     }()
 
+    private var picked: [CodeSession] { sessions.filter { selected.contains($0.id) } }
+    private var targetProfile: Profile? { targets.first(where: { $0.id == targetID }) }
+    private var missingParents: [CodeSession] {
+        guard let target = targetProfile, !selected.isEmpty else { return [] }
+        return ancestors(picked, target)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let parents = missingParents
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(L("Chats in '\(sourceName)'", "'\(sourceName)' sohbetleri")).font(.headline)
                 Spacer()
@@ -51,6 +64,12 @@ struct TransferView: View {
                 .toggleStyle(.checkbox)
             }
             .frame(minHeight: 260)
+            if let target = targetProfile, !parents.isEmpty {
+                Toggle(L("Also copy \(parents.count) parent chat(s), so these show under their parent in '\(target.name)'",
+                         "Ayrıca \(parents.count) üst sohbeti de kopyala; böylece bunlar '\(target.name)' hesabında üst sohbetlerinin altında görünür"),
+                       isOn: $withAncestors)
+                    .toggleStyle(.checkbox)
+            }
             HStack {
                 Picker(L("Copy to", "Hedef"), selection: $targetID) {
                     ForEach(targets, id: \.id) { Text($0.name).tag($0.id) }
@@ -59,8 +78,8 @@ struct TransferView: View {
                 Spacer()
                 Button(L("Cancel", "Vazgeç"), action: onCancel).keyboardShortcut(.cancelAction)
                 Button(L("Copy chats", "Sohbetleri kopyala")) {
-                    guard let target = targets.first(where: { $0.id == targetID }) else { return }
-                    onCopy(sessions.filter { selected.contains($0.id) }, target)
+                    guard let target = targetProfile else { return }
+                    onCopy((withAncestors ? parents : []) + picked, target)
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(selected.isEmpty)

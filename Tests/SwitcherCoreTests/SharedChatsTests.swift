@@ -111,7 +111,9 @@ final class TranscriptDiffTests: XCTestCase {
         let b = try build("big-b.jsonl", tail: String(repeating: "{\"type\":\"cost-state\"}\n", count: 10))
         let start = Date()
         let rel = try TranscriptDiff.compare(a, b)
-        XCTAssertLessThan(Date().timeIntervalSince(start), 2)
+        // A loose bound: it only catches a non-streaming (quadratic) compare; debug builds on a busy CI runner
+        // took over 2 s for the streaming one.
+        XCTAssertLessThan(Date().timeIntervalSince(start), 10)
         XCTAssertEqual(rel, .firstAhead(messages: 1000))
     }
 }

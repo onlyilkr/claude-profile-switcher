@@ -17,8 +17,21 @@ public struct Launchers {
         self.ownBundleID = ownBundleID
     }
 
+    /// A label is typed by the user or hand-edited into settings.json, so it never decides
+    /// where the bundle lives: separators become dashes, control characters go, no leading dot.
+    public static func fileName(forLabel label: String) -> String {
+        let dropped = CharacterSet.controlCharacters.union(.newlines)
+        var name = String(String.UnicodeScalarView(label.unicodeScalars.filter { !dropped.contains($0) }.map {
+            $0 == "/" || $0 == ":" ? "-" : $0
+        }))
+        name = name.trimmingCharacters(in: .whitespaces)
+        while name.hasPrefix(".") { name.removeFirst() }
+        name = name.trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? "Profile" : name
+    }
+
     public func url(forLabel label: String) -> URL {
-        dir.appendingPathComponent("Claude - \(label).app", isDirectory: true)
+        dir.appendingPathComponent("Claude - \(Launchers.fileName(forLabel: label)).app", isDirectory: true)
     }
 
     public func exists(label: String) -> Bool {
@@ -55,7 +68,7 @@ public struct Launchers {
     }
 
     @discardableResult
-    public func create(profile: Profile, icon: (Int) -> NSBitmapImageRep) throws -> URL {
+    public func create(profile: Profile, icon: (Int) -> NSBitmapImageRep, onRegisterFailure: (OSStatus) -> Void = { _ in }) throws -> URL {
         let fm = FileManager.default
         let target = url(forLabel: profile.name)
         if fm.fileExists(atPath: target.path) {
@@ -97,7 +110,8 @@ public struct Launchers {
         let plist = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
         try plist.write(to: contents.appendingPathComponent("Info.plist"))
         try Badge.writeICNS(to: contents.appendingPathComponent("Resources/AppIcon.icns"), render: icon)
-        LSRegisterURL(target as CFURL, true)
+        let status = LSRegisterURL(target as CFURL, true)
+        if status != noErr { onRegisterFailure(status) }
         return target
     }
 

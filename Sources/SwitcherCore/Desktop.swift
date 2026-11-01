@@ -10,6 +10,11 @@ public struct ClaudeApp {
     public let executable: String
     public let version: String
 
+    /// Any .app would otherwise pass (`--claude-path /Applications/Calculator.app`).
+    static func isClaude(_ url: URL) -> Bool {
+        url.pathExtension == "app" && Bundle(url: url)?.bundleIdentifier == bundleID
+    }
+
     /// A path given with --claude-path first, then wherever Launch Services knows Claude
     /// is, then the usual folders. `strict`: a path the user typed must be right, not
     /// quietly replaced by another Claude.
@@ -17,11 +22,10 @@ public struct ClaudeApp {
         var candidates: [URL] = []
         if let override, !override.isEmpty {
             let url = URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
-            if strict {
-                guard url.pathExtension == "app", Bundle(url: url)?.executableURL != nil else {
-                    throw SwitcherError(L("--claude-path must point at Claude.app; '\(override)' is not an app.",
-                                          "--claude-path Claude.app'i göstermeli; '\(override)' bir uygulama değil."))
-                }
+            if strict, !isClaude(url) {
+                let found = Bundle(url: url)?.bundleIdentifier
+                throw SwitcherError(L("--claude-path must point at Claude.app; '\(override)' is \(found.map { "another app (\($0))" } ?? "not an app").",
+                                      "--claude-path Claude.app'i göstermeli; '\(override)' \(found.map { "başka bir uygulama (\($0))" } ?? "bir uygulama değil")."))
             }
             candidates.append(url)
         }
@@ -30,7 +34,7 @@ public struct ClaudeApp {
         candidates.append(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/Claude.app"))
 
         for candidate in candidates {
-            guard candidate.pathExtension == "app", let bundle = Bundle(url: candidate),
+            guard isClaude(candidate), let bundle = Bundle(url: candidate),
                   let exe = bundle.executableURL?.resolvingSymlinksInPath().path,
                   FileManager.default.isExecutableFile(atPath: exe) else { continue }
             let version = bundle.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
