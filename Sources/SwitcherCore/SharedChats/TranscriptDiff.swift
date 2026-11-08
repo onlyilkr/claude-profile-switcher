@@ -7,6 +7,16 @@ public enum TranscriptRelation: Equatable {
     case firstAhead(messages: Int)
     case secondAhead(messages: Int)
     case forked(first: Int, second: Int)
+
+    /// The same relation read the other way round.
+    public var flipped: TranscriptRelation {
+        switch self {
+        case .identical: return .identical
+        case .firstAhead(let n): return .secondAhead(messages: n)
+        case .secondAhead(let n): return .firstAhead(messages: n)
+        case .forked(let a, let b): return .forked(first: b, second: a)
+        }
+    }
 }
 
 public enum TranscriptDiff {
@@ -31,6 +41,60 @@ public enum TranscriptDiff {
         default: return .forked(first: countA, second: countB)
         }
     }
+
+    /// `newer` continues `older` under another cliSessionId (Claude resumed the chat and started a new history
+    /// file; the new file's record lists the old cliSessionId in priorCliSessionIds). The new file repeats only
+    /// part of the old history, and every line carries the new sessionId, so lines can't be compared as they are:
+    /// messages are matched by `uuid` instead.
+    /// - newer's own messages: those whose uuid the older file doesn't have.
+    /// - older's own messages: those after the last message both files have, written once the newer file had
+    ///   started its own messages (lines from before the resume, like an interrupted turn, are what was resumed).
+    /// The result is read like `compare(older, newer)`: `secondAhead` means the older file is simply behind.
+    public static func compareContinuation(older: URL, newer: URL) throws -> TranscriptRelation {
+        let old = try messages(in: older), new = try messages(in: newer)
+        let oldIDs = Set(old.map(\.uuid)), newIDs = Set(new.map(\.uuid))
+        let newOwn = new.filter { !oldIDs.contains($0.uuid) }
+        let resumedAt = newOwn.compactMap(\.time).min()
+        let lastShared = old.lastIndex { newIDs.contains($0.uuid) } ?? -1
+        let oldOwn = old[(lastShared + 1)...].filter { m in
+            // A line without a time can't be placed before the resume: it counts as the older file's own.
+            guard let resumedAt, let time = m.time else { return true }
+            return time >= resumedAt
+        }.count
+        switch (oldOwn, newOwn.count) {
+        case (0, 0): return .identical
+        case (_, 0): return .firstAhead(messages: oldOwn)
+        case (0, let n): return .secondAhead(messages: n)
+        case (let o, let n): return .forked(first: o, second: n)
+        }
+    }
+
+    private struct Message { let uuid: String; let time: Date? }
+
+    private static func messages(in url: URL) throws -> [Message] {
+        let reader = try LineReader(url: url)
+        defer { reader.close() }
+        var out: [Message] = []
+        while let line = try reader.next() {
+            // Histories run to hundreds of MB: drain each line's parsed objects right away.
+            let message: Message? = autoreleasepool {
+                guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                      let uuid = object["uuid"] as? String else { return nil }
+                return Message(uuid: uuid, time: (object["timestamp"] as? String).flatMap(parseTime))
+            }
+            if let message { out.append(message) }
+        }
+        return out
+    }
+
+    private static let fractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let whole = ISO8601DateFormatter()
+
+    static func parseTime(_ text: String) -> Date? { fractional.date(from: text) ?? whole.date(from: text) }
 
     /// A valid JSON object with a top-level string field `uuid`.
     public static func isMessageLine(_ line: Data) -> Bool {

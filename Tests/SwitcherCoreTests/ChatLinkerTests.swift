@@ -442,6 +442,63 @@ final class ChatLinkerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: transcript(loseCwd).path))
     }
 
+    // MARK: a chat resumed under a new cliSessionId
+
+    /// The winner resumed the chat under a new cliSessionId (its record lists the loser's among the prior ones).
+    /// Sync points the loser's record at the new history and moves the loser's old history to the backups.
+    private func resumed(newCli: String = "cli-2222", loserTail: String = "") throws {
+        try writeJSON(record(cwd: winCwd, extra: ["cliSessionId": newCli, "priorCliSessionIds": ["cli-0000", cli]]), recordURL(win))
+        try writeJSON(record(cwd: loseCwd), recordURL(lose))
+        try writeJSON(leaseFile(["wt-win": lease(winCwd, name: "wt-win", by: chatID)]), WorktreeLeases.file(win))
+        try writeJSON(leaseFile(["wt-lose": lease(loseCwd, name: "wt-lose", by: chatID)]), WorktreeLeases.file(lose))
+        let newTranscript = TranscriptLocator.transcript(root: paths.transcriptsRoot, cwd: winCwd, cliSessionID: newCli)
+        try FileManager.default.createDirectory(at: newTranscript.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try ("{\"uuid\":\"u1\",\"sessionId\":\"\(newCli)\",\"timestamp\":\"2026-11-01T10:00:00.000Z\"}\n"
+             + "{\"uuid\":\"n1\",\"sessionId\":\"\(newCli)\",\"timestamp\":\"2026-11-08T12:02:56.000Z\"}\n")
+            .write(to: newTranscript, atomically: true, encoding: .utf8)
+        try transcriptText(loseCwd, "{\"uuid\":\"u0\",\"sessionId\":\"\(cli)\",\"timestamp\":\"2026-10-01T10:00:00.000Z\"}\n"
+                           + "{\"uuid\":\"u1\",\"sessionId\":\"\(cli)\",\"timestamp\":\"2026-11-01T10:00:00.000Z\"}\n" + loserTail)
+        let side = TranscriptLocator.sidecar(root: paths.transcriptsRoot, cwd: loseCwd, cliSessionID: cli)
+        try FileManager.default.createDirectory(at: side, withIntermediateDirectories: true)
+        try "x".write(to: side.appendingPathComponent("f.txt"), atomically: true, encoding: .utf8)
+    }
+
+    func testSyncBringsAnOldHistoryToItsContinuationUnderANewCliSession() throws {
+        try resumed()
+        let c = try chat()
+        XCTAssertEqual(c.status, ["Default": .latest, "Two": .behind(messages: 1)])
+        let report = try linker().link(c, winner: "Default", profiles: [win, lose])
+        XCTAssertEqual(report, LinkReport(linked: ["Two"]))
+        XCTAssertEqual(try obj(recordURL(lose))["cliSessionId"] as? String, "cli-2222")
+        XCTAssertEqual(try obj(recordURL(lose))["cwd"] as? String, winCwd)
+        // The old history and its side folder went to the backups, never deleted.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: transcript(loseCwd).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: TranscriptLocator.sidecar(root: paths.transcriptsRoot, cwd: loseCwd, cliSessionID: cli).path))
+        XCTAssertTrue(backupFiles().contains { $0.hasSuffix("\(cli).jsonl") })
+        XCTAssertTrue(backupFiles().contains { $0.hasSuffix("\(cli)/f.txt") })
+    }
+
+    func testSyncRefusesWhenTheOldHistoryGrewAfterTheScan() throws {
+        try resumed()
+        let c = try chat()
+        try transcriptText(loseCwd, "{\"uuid\":\"u1\",\"sessionId\":\"\(cli)\",\"timestamp\":\"2026-11-01T10:00:00.000Z\"}\n"
+                           + "{\"uuid\":\"late\",\"sessionId\":\"\(cli)\",\"timestamp\":\"2026-11-09T10:00:00.000Z\"}\n")
+        let report = try linker().link(c, winner: "Default", profiles: [win, lose])
+        XCTAssertEqual(report, LinkReport(linked: [], skipped: ["Two": staleMessage]))
+        XCTAssertEqual(try obj(recordURL(lose))["cliSessionId"] as? String, cli)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: transcript(loseCwd).path))
+    }
+
+    func testSyncRefusesWhenTheOldHistoryIsStillRunning() throws {
+        try resumed()
+        let c = try chat()
+        liveNow = [(pid: 1, profileDir: lose.path.path, cliSessionID: cli)]
+        let report = try linker().link(c, winner: "Default", profiles: [win, lose])
+        XCTAssertEqual(report.linked, [])
+        XCTAssertNotNil(report.skipped["Two"])
+        XCTAssertEqual(try obj(recordURL(lose))["cliSessionId"] as? String, cli)
+    }
+
     // MARK: final review fixes
 
     private func uuidLines(_ ids: [String]) -> String { ids.map { "{\"uuid\":\"\($0)\"}\n" }.joined() }

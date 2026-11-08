@@ -95,6 +95,53 @@ final class TranscriptDiffTests: XCTestCase {
         XCTAssertEqual(try TranscriptDiff.compare(a, b), .identical)
     }
 
+    // MARK: a chat resumed under a new cliSessionId (the new file continues the old one)
+
+    private func line(_ id: String, session: String, at ts: String) -> String {
+        "{\"type\":\"user\",\"uuid\":\"\(id)\",\"sessionId\":\"\(session)\",\"timestamp\":\"\(ts)\"}"
+    }
+
+    /// The real case: the new file inherits only part of the old history (with its own sessionId on every
+    /// line), the old file still has an interrupted turn written just before the resume, and the new file
+    /// then grows on its own.
+    func testContinuationMakesTheOlderFileBehindWhenItsTailPredatesTheResume() throws {
+        let old = try write("old.jsonl", [
+            line("u1", session: "old", at: "2026-11-01T10:00:00.000Z"),
+            line("u2", session: "old", at: "2026-11-05T15:39:30.000Z"),
+            "{\"type\":\"system\",\"uuid\":\"stop\",\"timestamp\":\"2026-11-05T15:39:33.000Z\"}",
+            line("typed", session: "old", at: "2026-11-08T12:01:35.000Z"),
+            line("interrupted", session: "old", at: "2026-11-08T12:01:39.000Z"),
+        ])
+        let new = try write("new.jsonl", [
+            "{\"type\":\"history-suppression\",\"sessionId\":\"new\",\"cause\":\"fork_inherit\",\"ts\":\"2026-11-08T12:01:47.080Z\"}",
+            line("u2", session: "new", at: "2026-11-05T15:39:30.000Z"),
+            line("n1", session: "new", at: "2026-11-08T12:02:56.000Z"),
+            line("n2", session: "new", at: "2026-11-08T22:30:31.000Z"),
+        ])
+        // A raw line compare sees two unrelated files.
+        XCTAssertEqual(try TranscriptDiff.compare(old, new), .forked(first: 5, second: 3))
+        XCTAssertEqual(try TranscriptDiff.compareContinuation(older: old, newer: new), .secondAhead(messages: 2))
+    }
+
+    func testContinuationIsForkedWhenTheOlderFileGrewAfterTheResume() throws {
+        let old = try write("old.jsonl", [
+            line("u1", session: "old", at: "2026-11-01T10:00:00.000Z"),
+            line("later", session: "old", at: "2026-11-09T09:00:00.000Z"),
+        ])
+        let new = try write("new.jsonl", [
+            line("u1", session: "new", at: "2026-11-01T10:00:00.000Z"),
+            line("n1", session: "new", at: "2026-11-08T12:02:56.000Z"),
+            line("n2", session: "new", at: "2026-11-08T12:03:00.000Z"),
+        ])
+        XCTAssertEqual(try TranscriptDiff.compareContinuation(older: old, newer: new), .forked(first: 1, second: 2))
+    }
+
+    func testContinuationWithNothingNewIsIdentical() throws {
+        let old = try write("old.jsonl", [line("u1", session: "old", at: "2026-11-01T10:00:00.000Z")])
+        let new = try write("new.jsonl", [line("u1", session: "new", at: "2026-11-01T10:00:00.000Z")])
+        XCTAssertEqual(try TranscriptDiff.compareContinuation(older: old, newer: new), .identical)
+    }
+
     func testCompareStreamsLargeFiles() throws {
         let line = "{\"type\":\"user\",\"uuid\":\"" + String(repeating: "a", count: 990) + "\"}\n"
         let chunk = Data(String(repeating: line, count: 1000).utf8)   // ~1 MB
@@ -470,6 +517,29 @@ final class SharedChatScannerTests: XCTestCase {
         let chat = try XCTUnwrap(scanner().scan([profileA, profileB]).first)
         XCTAssertEqual(chat.status["B"], .latest)
         XCTAssertEqual(chat.status["A"], .behind(messages: 2))
+    }
+
+    /// Claude resumed the chat in B under a new cliSessionId: B's file is smaller, every line carries the new
+    /// sessionId, and B's record lists A's cliSessionId among its prior ones. B is the latest, A is behind.
+    func testResumedCopyWithANewCliSessionIsAheadOfTheOldHistory() throws {
+        try record(profileA, cli: "old", extra: ["lastActivityAt": 1_700_000_000_000])
+        try record(profileB, cli: "new", extra: ["priorCliSessionIds": ["older", "old"], "lastActivityAt": 1_700_000_900_000])
+        func l(_ id: String, _ s: String, _ ts: String) -> String {
+            "{\"type\":\"user\",\"uuid\":\"\(id)\",\"sessionId\":\"\(s)\",\"timestamp\":\"\(ts)\",\"pad\":\"" + String(repeating: "x", count: 300) + "\"}"
+        }
+        try transcript(cwd: "/work/app", cli: "old", lines: (1...20).map { l("u\($0)", "old", "2026-11-01T10:00:\(String(format: "%02d", $0)).000Z") }
+                       + [l("interrupted", "old", "2026-11-08T12:01:39.000Z")])
+        try transcript(cwd: "/work/app", cli: "new", lines: ["{\"type\":\"history-suppression\",\"sessionId\":\"new\",\"cause\":\"fork_inherit\"}",
+                                                            l("u20", "new", "2026-11-01T10:00:20.000Z"),
+                                                            l("n1", "new", "2026-11-08T12:02:56.000Z"),
+                                                            l("n2", "new", "2026-11-08T22:30:31.000Z")])
+        let chat = try XCTUnwrap(scanner().scan([profileA, profileB]).first)
+        XCTAssertEqual(chat.status["B"], .latest)
+        XCTAssertEqual(chat.status["A"], .behind(messages: 2))
+        XCTAssertEqual(chat.cliSessionID, "new")
+        XCTAssertEqual(chat.copies.first { $0.profileID == "A" }?.cliSessionID, "old")
+        XCTAssertEqual(chat.copies.first { $0.profileID == "B" }?.priorCliSessionIDs, ["older", "old"])
+        XCTAssertEqual(LinkPolicy.winner(of: chat), "B")
     }
 
     func testThreeProfiles() throws {

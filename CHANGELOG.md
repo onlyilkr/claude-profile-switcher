@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Shared chats got the direction wrong for a chat Claude resumed under a new history file (a new
+  `cliSessionId`, with the old one in the record's `priorCliSessionIds`): the old, larger file was taken as
+  up to date and the newer copy as "forked", because the history files were compared line by line and every
+  line carries its own session id. Such copies are now compared by message id: the old copy reads as behind
+  (or forked, when it was also continued after the resume), and the newer copy as up to date.
+- Sync can now bring a copy like that to its continuation: it skipped it before with "The record points at a
+  different history". The old history file and its side folder go to the backups as usual, and Sync refuses
+  while either history is still running in Claude or when the old copy changed since it was checked.
+
 ## [1.1.1] - 2026-11-01
 
 Fixes for races between the app and the command line, settings that failed silently, and a few

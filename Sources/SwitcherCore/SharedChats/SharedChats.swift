@@ -13,12 +13,35 @@ public struct ChatCopy: Equatable {
     public let lastActivity: Date
     /// nil = unknown (no worktree, or the lease file could not be read).
     public let leaseHeld: Bool?
+    /// The record's cliSessionId when it was scanned; the history file is named after it.
+    public let cliSessionID: String
+    /// The record's priorCliSessionIds: the histories this one continues (Claude starts a new one on resume).
+    public let priorCliSessionIDs: [String]
 
     public init(profileID: String, profileName: String, record: URL, cwd: String, worktreePath: String?, transcript: URL,
-                hasTranscript: Bool, isArchived: Bool, lastActivity: Date, leaseHeld: Bool?) {
+                hasTranscript: Bool, isArchived: Bool, lastActivity: Date, leaseHeld: Bool?,
+                cliSessionID: String = "", priorCliSessionIDs: [String] = []) {
         self.profileID = profileID; self.profileName = profileName; self.record = record; self.cwd = cwd
         self.worktreePath = worktreePath; self.transcript = transcript; self.hasTranscript = hasTranscript
         self.isArchived = isArchived; self.lastActivity = lastActivity; self.leaseHeld = leaseHeld
+        self.cliSessionID = cliSessionID; self.priorCliSessionIDs = priorCliSessionIDs
+    }
+
+    /// This copy's history continues `other`'s: Claude resumed the chat here under a new cliSessionId.
+    public func continues(_ other: ChatCopy) -> Bool {
+        !other.cliSessionID.isEmpty && other.cliSessionID != cliSessionID && priorCliSessionIDs.contains(other.cliSessionID)
+    }
+}
+
+public enum CopyRelation {
+    /// How two copies' histories relate: line by line when they share a cliSessionId (or nothing says how they
+    /// relate), by message ids when one copy's history continues the other's under a new cliSessionId.
+    public static func between(_ first: ChatCopy, _ second: ChatCopy,
+                               compare: (URL, URL) throws -> TranscriptRelation = TranscriptDiff.compare,
+                               continuation: (URL, URL) throws -> TranscriptRelation = TranscriptDiff.compareContinuation) throws -> TranscriptRelation {
+        if second.continues(first) { return try continuation(first.transcript, second.transcript) }
+        if first.continues(second) { return try continuation(second.transcript, first.transcript).flipped }
+        return try compare(first.transcript, second.transcript)
     }
 }
 
@@ -69,6 +92,7 @@ public final class SharedChatScanner {
     private let transfer: ChatTransfer
     private let links: () -> [String: Set<String>]
     private let compare: (URL, URL) throws -> TranscriptRelation
+    private let continuation: (URL, URL) throws -> TranscriptRelation
     private var cache: [String: TranscriptRelation] = [:]
     private var touched = Set<String>()
     /// Serialises scans: the cache and the touched set belong to one scan at a time.
@@ -76,10 +100,12 @@ public final class SharedChatScanner {
 
     public init(transcriptsRoot: URL,
                 links: @escaping () -> [String: Set<String>] = { [:] },
-                compare: @escaping (URL, URL) throws -> TranscriptRelation = TranscriptDiff.compare) {
+                compare: @escaping (URL, URL) throws -> TranscriptRelation = TranscriptDiff.compare,
+                continuation: @escaping (URL, URL) throws -> TranscriptRelation = TranscriptDiff.compareContinuation) {
         self.transfer = ChatTransfer(transcriptsRoot: transcriptsRoot)
         self.links = links
         self.compare = compare
+        self.continuation = continuation
     }
 
     private struct Found {
@@ -135,7 +161,8 @@ public final class SharedChatScanner {
         let transcript = TranscriptLocator.transcript(root: transfer.transcriptsRoot, cwd: cwd, cliSessionID: cli)
         let copy = ChatCopy(profileID: profile.id, profileName: profile.name, record: file, cwd: cwd, worktreePath: worktree,
                             transcript: transcript, hasTranscript: FileManager.default.fileExists(atPath: transcript.path),
-                            isArchived: (raw["isArchived"] as? Bool) ?? false, lastActivity: activity, leaseHeld: held)
+                            isArchived: (raw["isArchived"] as? Bool) ?? false, lastActivity: activity, leaseHeld: held,
+                            cliSessionID: cli, priorCliSessionIDs: ((raw["priorCliSessionIds"] as? [Any]) ?? []).compactMap { $0 as? String })
         let title = ((raw["title"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return (id, Found(copy: copy, cliSessionID: cli, title: title.isEmpty ? L("Chat \(bare.prefix(8))", "Sohbet \(bare.prefix(8))") : title))
     }
@@ -150,7 +177,7 @@ public final class SharedChatScanner {
         for copy in copies {
             guard copy.hasTranscript, let ref = reference else { status[copy.profileID] = .noTranscript; continue }
             if copy.transcript == ref.transcript { status[copy.profileID] = .latest; continue }
-            switch relation(ref.transcript, copy.transcript) {
+            switch relation(ref, copy) {
             case .some(.identical): status[copy.profileID] = .latest
             case .some(.firstAhead(let n)): status[copy.profileID] = .behind(messages: n)
             case .some(.forked(let first, let own)):
@@ -194,12 +221,14 @@ public final class SharedChatScanner {
             return a != b ? a > b : $0.lastActivity > $1.lastActivity
         }
         guard var ref = candidates.first else { return nil }
+        // A copy is never taken twice, so the loop ends even if two relations disagree.
+        var taken: Set<URL> = [ref.transcript]
         var changed = true
         while changed {
             changed = false
-            for other in candidates where other.transcript != ref.transcript {
-                if case .some(.secondAhead) = relation(ref.transcript, other.transcript) {
-                    ref = other; changed = true; break
+            for other in candidates where !taken.contains(other.transcript) {
+                if case .some(.secondAhead) = relation(ref, other) {
+                    ref = other; taken.insert(other.transcript); changed = true; break
                 }
             }
         }
@@ -217,11 +246,18 @@ public final class SharedChatScanner {
         return "\(url.path)|\(size)|\(mtime)"
     }
 
-    private func relation(_ first: URL, _ second: URL) -> TranscriptRelation? {
-        let key = fingerprint(first) + "||" + fingerprint(second)
+    private func relation(_ first: ChatCopy, _ second: ChatCopy) -> TranscriptRelation? {
+        try? CopyRelation.between(first, second,
+                                  compare: { try self.cached("lines", $0, $1, self.compare) },
+                                  continuation: { try self.cached("continues", $0, $1, self.continuation) })
+    }
+
+    private func cached(_ kind: String, _ first: URL, _ second: URL,
+                        _ run: (URL, URL) throws -> TranscriptRelation) throws -> TranscriptRelation {
+        let key = kind + "|" + fingerprint(first) + "||" + fingerprint(second)
         touched.insert(key)
         if let hit = cache[key] { return hit }
-        guard let result = try? compare(first, second) else { return nil }
+        let result = try run(first, second)
         cache[key] = result
         return result
     }
