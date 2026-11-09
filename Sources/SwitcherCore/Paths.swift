@@ -33,6 +33,10 @@ public struct Paths {
 
     /// Copies of an account's pin databases taken before the switcher writes them, newest five per account.
     public var pinStoreBackups: URL { switcherHome.appendingPathComponent("backups/pinstore", isDirectory: true) }
+    /// When the update check last ran, what it found, and the release whose note was closed.
+    public var updateState: URL { switcherHome.appendingPathComponent("update-check.json") }
+    /// The Terminal script **Update** opens for a Homebrew install.
+    public var upgradeScript: URL { switcherHome.appendingPathComponent("Update Claude Profile Switcher.command") }
 
     /// Launcher apps go where Spotlight and Launchpad look, without needing admin rights.
     public var launcherDir: URL { home.appendingPathComponent("Applications", isDirectory: true) }

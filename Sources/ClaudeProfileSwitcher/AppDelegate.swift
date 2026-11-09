@@ -29,6 +29,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var linksLedger: LinksLedger?
     /// Chats already reported as open in two accounts; cleared once the condition goes away.
     private var warnedOpenTwice: Set<String> = []
+    /// Ticks hourly; a request goes out only once a day (see UpdateCheck).
+    private var updateTimer: Timer?
+    private var checkingUpdates = false
+    private var updateOffer: AppVersion?
+    private var appVersion: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev" }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Everything before any URL arrives: when Launch Services starts the app to hand it
@@ -43,6 +48,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.action = #selector(togglePanel)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
+        state.appVersion = appVersion
+        state.settingsExpanded = switcher?.settings.showSettings ?? false
         panel = PanelController(state: state, button: statusItem.button)
         panel.onShow = { [weak self] in self?.refresh(); self?.scanSharedChats() }
         panel.onTick = { [weak self] in self?.refresh() }
@@ -83,6 +90,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switcher?.retakeRouterIfNeeded()
         updateOpenTwiceTimer()
         if linkingOn { scanSharedChats() }
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.checkForUpdates() }
+        // Not during start-up work: a little later, and quietly when offline.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.checkForUpdates() }
+    }
+
+    // MARK: Updates
+
+    /// Asks GitHub when a check is due (once a day) and the setting is on; what it found shows as a note.
+    private func checkForUpdates() {
+        guard let sw = switcher else { return }
+        guard sw.settings.checkForUpdates else { setUpdateOffer(nil); return }
+        if checkingUpdates { return }
+        checkingUpdates = true
+        let file = sw.paths.updateState, current = appVersion
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let found = UpdateCheck.run(state: UpdateState(file: file), current: current, fetch: UpdateCheck.fetch)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.checkingUpdates = false
+                // The setting may have been turned off meanwhile.
+                self.setUpdateOffer(self.switcher?.settings.checkForUpdates == true ? found : nil)
+            }
+        }
+    }
+
+    private func setUpdateOffer(_ version: AppVersion?) {
+        updateOffer = version
+        if state.updateAvailable != version?.description { state.updateAvailable = version?.description }
+    }
+
+    /// A Homebrew install upgrades in Terminal, where its progress and any password prompt show; anything
+    /// else gets the release page. Both are built from the checked version only.
+    private func performUpdate() {
+        guard let sw = switcher, let version = updateOffer else { return }
+        panel.close()
+        if let brew = UpdateCheck.brew() {
+            let script = sw.paths.upgradeScript
+            do {
+                try FileManager.default.createDirectory(at: script.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+                try UpdateCheck.upgradeScript(brew: brew, app: Bundle.main.bundleURL).write(to: script, atomically: true, encoding: .utf8)
+                chmod(script.path, 0o700)
+                if NSWorkspace.shared.open(script) { return }
+            } catch {
+                sw.logError("Update script not written: \(Switcher.describe(error))")
+            }
+        }
+        NSWorkspace.shared.open(UpdateCheck.releasePage(version))
+    }
+
+    private func dismissUpdate() {
+        guard let sw = switcher, let version = updateOffer else { return }
+        let file = sw.paths.updateState
+        let saved = UpdateState(file: file)
+        saved.dismissed = version
+        saved.save()
+        setUpdateOffer(nil)
     }
 
     @objc private func togglePanel() { panel.toggle() }
@@ -148,6 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let linking = sw.settings["LinkWorktreeChats"] as? Bool == true
         set(\.linkChats, linking)
         set(\.syncPins, sw.settings.syncPins)
+        set(\.checkUpdates, sw.settings.checkForUpdates)
         set(\.pinSyncProblems, { let blocked = sw.restoreBlocked; return sw.pinSyncProblems.sorted { $0.key < $1.key }.map { PinSyncNote(id: $0.key, text: $0.value, restoreBlock: blocked.contains($0.key)) } }())
         updateOpenTwiceTimer()
         if sharedChatsModel.linkEnabled != linking { sharedChatsModel.linkEnabled = linking }
@@ -237,6 +302,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.save("SyncPins", on)
             self?.refresh()
         }
+        a.setCheckUpdates = { [weak self] on in
+            self?.save("CheckForUpdates", on)
+            self?.refresh()
+            self?.checkForUpdates()
+        }
+        a.setSettingsExpanded = { [weak self] on in self?.save("ShowSettings", on ? true : nil) }
+        a.openReleaseNotes = { [weak self] in
+            guard let self else { return }
+            self.panel.close()
+            NSWorkspace.shared.open(UpdateCheck.notesPage(for: self.appVersion))
+        }
+        a.update = { [weak self] in self?.performUpdate() }
+        a.dismissUpdate = { [weak self] in self?.dismissUpdate() }
         a.quit = { NSApp.terminate(nil) }
         a.downloadClaude = { NSWorkspace.shared.open(URL(string: "https://claude.ai/download")!) }
         state.actions = a

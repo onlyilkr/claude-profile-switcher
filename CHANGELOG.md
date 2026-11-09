@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-11-10
+
+### Added
+
+- Update check, on by default (**Check for updates** in the panel, `CheckForUpdates` in `settings.json`): once
+  a day the switcher asks GitHub for its latest release, and when one is newer the panel says so. **Update**
+  runs `brew update` and `brew upgrade --cask claude-profile-switcher` in Terminal for a Homebrew install, and opens the release
+  page otherwise; the cross hides the note until the next release. It is the switcher's only network request:
+  no cookies or credentials, nothing about accounts or chats, only the version number is read from the
+  answer, and the switcher never downloads or replaces itself. Turning it off means no network requests.
+- The switcher's own version at the bottom of the panel, over Claude's; a click opens that release's notes.
+
+### Changed
+
+- The panel opens as a short list of accounts, like a menu. The switches moved into one **Settings** group
+  that stays closed until you open it, and remembers how you left it (`ShowSettings` in `settings.json`).
+- Each switch is one line; its explanation is behind an info button next to it, one open at a time.
+- **Keep worktree chats linked across accounts (experimental)** is now **Keep worktree chats linked**, marked
+  *Experimental*; its title no longer gets cut off.
+- What needs your attention (accounts whose chats or pins could not be synced, chats that went separate ways,
+  chats still to link) shows in notes under the accounts, also while Settings is closed, instead of under a switch.
+- Switches are a size larger, notices share one look, **Quit** shows its shortcut, and the "N open" count carries
+  the green dot of an open account's ring.
+
 ## [1.2.0] - 2026-11-10
 
 Shared chats now stay the same across accounts as you switch, and a chat Claude resumed under a new
@@ -193,6 +217,7 @@ First public release: a macOS port of
   `--route-sign-ins`, `--revert`, `--open-link`, `--open-links-in`, `--claude-path`.
 - English and Turkish, following the system language.
 
+[1.3.0]: https://github.com/onlyilkr/claude-profile-switcher/releases/tag/v1.3.0
 [1.2.0]: https://github.com/onlyilkr/claude-profile-switcher/releases/tag/v1.2.0
 [1.1.1]: https://github.com/onlyilkr/claude-profile-switcher/releases/tag/v1.1.1
 [1.1.0]: https://github.com/onlyilkr/claude-profile-switcher/releases/tag/v1.1.0

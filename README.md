@@ -25,7 +25,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/panel-dark.png">
-    <img src="docs/images/panel-light.png" width="360" alt="The panel under the menu bar icon: five accounts with coloured badges. Default and Work have a green ring (open), Client an orange one (open, waiting for sign-in), Account 5 a spinning ring (opening), Personal none (closed). Default shows 38% and Personal 100% of the 5-hour limit. Below: Add account, the sign-in routing switch with a picker for other links, the experimental switch to keep worktree chats linked across accounts, Sync chats and pins across accounts, and Open at login.">
+    <img src="docs/images/panel-light.png" width="360" alt="The panel under the menu bar icon: five accounts with coloured badges. Default and Work have a green ring (open), Client an orange one (open, waiting for sign-in), Account 5 a spinning ring (opening), Personal none (closed). Default shows 38% and Personal 100% of the 5-hour limit. Below: Add account, then the Settings group, open: the sign-in routing switch with a picker for other links, Sync chats and pins across accounts, Keep worktree chats linked (marked Experimental), Check for updates, and Open at login, each with an info button. At the bottom, the switcher's version over Claude's, and Quit.">
   </picture>
 </p>
 
@@ -108,7 +108,7 @@ Three things about Claude on macOS shape the design (as observed with Claude Des
 | **Launchers** | `Claude - Work.app` in `~/Applications` with a coloured badge, for Spotlight, Launchpad and the Dock. |
 | **Per-account environment** | Environment variables and launch flags for one account's Claude, for example for an MCP server. |
 | **Your original stays put** | The account you already have keeps its folder, auto update and settings. The switcher writes there only while that account is closed and after a backup: when you transfer chats into it, when chat and pin sync bring the shared chats over as it opens it (their records and Claude's own pin list, see [Keeping shared chats the same](#keeping-shared-chats-the-same) and [Pins](#pins)), or, with linking on, when a chat is linked. |
-| **Native and small** | Swift and AppKit, one universal binary, no dependencies, no network access, English and Turkish. |
+| **Native and small** | Swift and AppKit, one universal binary, no dependencies, English and Turkish. Its only network request is a once-a-day update check you can turn off. |
 
 ## Install
 
@@ -136,6 +136,15 @@ xattr -dr com.apple.quarantine "/Applications/Claude Profile Switcher.app"
 ```
 
 The second line tells Gatekeeper you trust this download; do it only for a zip whose checksum matched.
+
+### Updating
+
+Once a day the switcher asks GitHub for its latest release, and when one is newer the panel says so
+(**Version 1.x.y is available**). **Update** runs `brew update` and `brew upgrade --cask claude-profile-switcher`
+in Terminal for a Homebrew install, which quits the app, upgrades it and opens it again; for any other
+install it opens the release page. The cross hides the note until the next release. The switcher never
+downloads or replaces itself. Turn the check off with **Check for updates** under Settings in the panel (`CheckForUpdates`
+in `settings.json`); with it off, the switcher makes no network requests at all.
 
 ### Build from source
 
@@ -176,9 +185,17 @@ make install    # builds, copies to ~/Applications, opens it
 | `38%`, a thin bar and `12m ago` | The 5-hour limit as Claude last measured it, and how long ago. Orange from 75 %, red from 90 %. Hover for the weekly limit. |
 | **⋯** (on hover) or right-click | Open, Open usage in Claude, Rename, Transfer Code chats, Add launcher to Applications, Show in Finder, Move to Trash. |
 | Add account | A new profile, opened at the sign-in screen. |
+| Notes under the accounts | What the switcher left for you: accounts whose chats or pins could not be synced, chats that went separate ways, and chats still to link (with **Link all**). Always in view, also while Settings is closed. |
+| **Settings** | Shows or hides the switches below. The panel opens as a short list of accounts; Settings stays the way you left it. |
+| ⓘ next to a switch | What that switch does, in a few lines. One explanation is open at a time. |
 | Send sign-ins to the right account | Sign-in routing on or off. Hidden until there is a second account. |
 | Open other claude:// links in | Where links that are not sign-ins go while routing is on. |
 | Sync chats and pins across accounts | Chat and pin sync on or off (on by default). Hidden until there is a second account. See [Keeping shared chats the same](#keeping-shared-chats-the-same) and [Pins](#pins). |
+| Keep worktree chats linked, *Experimental* | Worktree chat linking on or off (off by default). Hidden until there is a second account. See [Linking worktree chats](#linking-worktree-chats-experimental-off-by-default). |
+| Check for updates | The once-a-day update check on or off (on by default). See [Updating](#updating). |
+| Open at login | Starts the switcher when you log in. |
+| *Version 1.x.y is available* | At the top, when a newer release is out: **Update**, or the cross to hide it until the next one. |
+| Version 1.x.y, at the bottom | The switcher's own version, over the version of Claude it found. Click it for that release's notes. |
 
 Renaming and deleting happen in the row itself: type the new name and press Return, or confirm the move
 to the Trash. An account whose Claude is open cannot be deleted.
@@ -310,7 +327,7 @@ worktree chats on one history.
 
 ### What you see
 
-- **A note in the panel**, under the account list, when some chats differ between accounts: "N chats
+- **A note at the top of the panel** when some chats differ between accounts: "N chats
   differ between accounts" with **Show**. The cross (x) hides it until the set of differing chats
   changes.
 - **The Shared chats window**, from **Show** or from the transfer summary. It lists every chat that
@@ -364,7 +381,7 @@ on and off (**Sync chats and pins across accounts**, on by default). For each sh
 
 It happens only when the switcher opens an account (the panel, a launcher, or `--launch`); opening
 Claude.app directly skips it. It runs whether or not linking is on and never blocks opening the account.
-What it leaves to you is a line under the **Sync chats and pins across accounts** switch, with counts
+What it leaves to you is a note under the accounts in the panel, with counts
 only: chats whose histories went separate ways (open the Shared chats window to see them, and with linking
 on, **Sync** keeps the copy you pick), and chats kept here although they were deleted in the other account.
 
@@ -380,7 +397,7 @@ Claude moves a worktree chat to a new worktree when you continue it in a second 
 the history there. Linking prevents that: the switcher makes both accounts point at the same worktree
 and the same history file, so there is one chat instead of two.
 
-Turn it on with **Keep worktree chats linked across accounts (experimental)** in the panel (it shows
+Turn it on with **Keep worktree chats linked** (marked *Experimental*) under Settings in the panel (it shows
 when you have more than one account). It was tried with Claude 4.29; with another version the panel
 says so. Nothing is linked until you ask:
 
@@ -388,7 +405,7 @@ says so. Nothing is linked until you ask:
 | --- | --- |
 | **Sync** | For a chat that is behind or forked: keep the newer copy (for a fork you pick which), and make the other account use it. The out-of-date history is moved to the switcher's backups, never deleted (see below for when it stays; an older history the kept copy continues always stays, since Claude may read the start of the chat from it). The other account's own record of the chat is replaced (after a backup), keeping its archived and starred state; the pin list is not touched. That account's own worktree for the chat is released to Claude, which may reuse it. |
 | **Link** | For a chat that is still on one history but would split: tell the other account about the worktree so Claude keeps using it. It uses the same operation as Sync: the other account's chat record is replaced after a backup, and if that account had its own history file for the chat, it is moved to the backups (see below for when it stays). Its own worktree for the chat, if any, is released to Claude. |
-| **Link all** | Link every such chat, after asking once. The same button sits under the setting in the panel while there are chats to link. |
+| **Link all** | Link every such chat, after asking once. The same button sits in a note under the accounts in the panel while there are chats to link. |
 | **Unlink** | Remove the link for one chat. The replaced record and the moved history are not put back; they stay in the backups (see [Undoing it](#undoing-it)). |
 
 With linking on, a transfer of a worktree chat links it right away. If it cannot (for example the
@@ -485,12 +502,12 @@ switcher's folder (the newest 5 per account are kept), and it restores them if t
 not read back as written. If that restore itself fails, Claude is not started on the account, and the message names the backup folder. The switcher remembers this in `restore-failed.json` in its folder (private to you, shared by the app and the command line), so every later attempt to open that account, from either, is refused with the same message until both of its storage folders read cleanly again (for example after you put the backup back); the panel keeps a line for it until then. Claude is never started on data in that state, so it cannot reset it. Every other field of Claude's stored values is kept (the values are re-encoded as JSON, so spacing, key order and the spelling of numbers can change, not their content). A crash between the two writes (Local Storage, then IndexedDB) leaves the backup intact, and the next sync repairs it. The backup folders are private to you (0700) and hold no copy of the storage's lock file. The chat records it changes are backed up beside them first, as before.
 
 When the storage is not in the format the switcher has seen, nothing is written. The same goes for an
-account where Claude has not saved any pins yet (pin one chat there once). The same goes for storage that cannot be read safely. The panel says which under the **Sync chats and pins across accounts** switch, one line per account, until that account's storage reads fine again (a sync started from the command line is only logged), and the log gets one line with a fixed reason,
+account where Claude has not saved any pins yet (pin one chat there once). The same goes for storage that cannot be read safely. The panel says which in a note under the accounts, one line per account, until that account's storage reads fine again (a sync started from the command line is only logged), and the log gets one line with a fixed reason,
 never chat names or file paths. Opening is not blocked by any of this, except when a failed restore leaves the account's data in doubt (above). It happens only when the
 switcher opens an account (the panel, a launcher, or `--launch`); opening Claude.app directly skips it, and
 if that happens while the switcher is writing that account's pins, Claude can fail to open its storage, so
 open accounts through the switcher.
-It is on by default; turn it off with **Sync chats and pins across accounts** in the panel (`SyncPins` in
+It is on by default; turn it off with **Sync chats and pins across accounts** under Settings in the panel (`SyncPins` in
 `settings.json`, kept under its old name).
 
 The chat transfer uses the same write: the copied chats that are pinned in the source are pinned at the
@@ -561,6 +578,8 @@ writes most of them; two are for hand editing:
 | `ClaudePath` | Set by `--claude-path`. |
 | `SyncPins` | `false` turns off chat and pin sync when the switcher opens an account (it does not affect the pins a chat transfer carries); absent or `true` means on. Set from the panel. |
 | `LinkWorktreeChats` | `true` when worktree chat linking is on; absent means off. Set from the panel. |
+| `CheckForUpdates` | `false` turns off the update check, and with it every network request the switcher makes; absent or `true` means on. Set from the panel. |
+| `ShowSettings` | `true` while the panel's Settings group is open; absent means closed. Set by opening or closing it. |
 
 If `settings.json` stops being valid JSON after a hand edit, the switcher stops saving anything and
 says so in the panel, instead of replacing the file and losing your other settings.
@@ -584,6 +603,7 @@ Claude is closed.
 | Who is starting or writing which account, and accounts whose pin restore failed | `~/Library/Application Support/Claude Profile Switcher/claims.json` and `restore-failed.json` |
 | Backups taken before pins are written | `~/Library/Application Support/Claude Profile Switcher/backups/pinstore/<time>/<account>/`, the newest 5 per account |
 | What each account had for its shared chats at its last sync, and how their history files compare | `~/Library/Application Support/Claude Profile Switcher/chat-sync-state.json` (account and chat ids, title hashes) and `chat-sync-cache.json` (history file paths, sizes and dates) |
+| What the update check last found, and the script **Update** opens for a Homebrew install | `~/Library/Application Support/Claude Profile Switcher/update-check.json` (version numbers and a date) and `Update Claude Profile Switcher.command` |
 | Backups of chat records the chat sync changes | Next to each record, `local_<id>.json.switcher-backup-<time>`, the newest 5 per record |
 
 A profile's folder name is its permanent id: Claude stores absolute paths inside its data, so
@@ -607,7 +627,13 @@ renaming changes only the label.
   sent. Chat records are read to list and copy them. Transcripts are read only to compare the copies of a shared chat (message ids and times); their text is never stored, logged or sent.
 - **Links are validated**: only `claude://` followed by ordinary URL characters, up to 2048 of them.
   The switcher's own `claudeprofileswitcher://` links can only open an existing profile.
-- **No network access**, no analytics, no updater. The only thing that leaves your Mac is what Claude
+- **One network request, and only while Check for updates is on**: at most once a day (a failed one is
+  tried again an hour later), a GET of `https://api.github.com/repos/onlyilkr/claude-profile-switcher/releases/latest`,
+  without cookies or credentials. It carries what any HTTPS request does (your IP address) and a
+  User-Agent naming the switcher's version; nothing about your accounts, profiles, chats or usage. Only the
+  release's version number is read from the answer, and the release page or `brew upgrade` the switcher
+  opens is built from that number, never from a link in the answer. There are no analytics and the
+  switcher never downloads or installs anything itself. Everything else that leaves your Mac is what Claude
   itself sends.
 
 See [SECURITY.md](SECURITY.md) for the full list of what the app touches and how to report a problem.
