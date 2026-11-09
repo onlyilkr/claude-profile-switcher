@@ -117,7 +117,8 @@ public final class Switcher {
         beginSync()
         Switcher.syncQueue.async {
             // A failed restore leaves the account's data in doubt: Claude must not start on it, with or without pin sync.
-            let stop = self.refuseAfterFailedRestore(target) ?? (syncOn ? self.syncPinsBeforeLaunch(target) : nil)
+            // Chats first: a chat deleted there is gone here before the pins are planned.
+            let stop = self.refuseAfterFailedRestore(target) ?? (syncOn ? { self.syncChatsBeforeLaunch(target); return self.syncPinsBeforeLaunch(target) }() : nil)
             self.claims.setSyncing(target.id, false)
             DispatchQueue.main.async {
                 self.endSync()
@@ -228,6 +229,44 @@ public final class Switcher {
           "'\(target.name)' açılmadı: başarısız bir pin eşitlemesinden sonra Claude verisi geri yüklenemedi ve Claude bu veriyle başlamamalı. Yedeğiniz şurada: \(backup). Claude başlatılmadı, böylece verisi sıfırlanmadı.")
     }
 
+    /// Before an account opens: the chats it shares follow the account used last (see ChatSync).
+    /// Runs on the launch's background queue; the caller holds the starting claim. Never stops the launch.
+    private func syncChatsBeforeLaunch(_ target: Profile) {
+        let profiles = store.list(status: true)
+        let open = profiles.filter { $0.isRunning || ($0.id != target.id && isStarting($0)) }.map(\.path)
+        let cache = RelationCache(file: paths.switcherHome.appendingPathComponent("chat-sync-cache.json"))
+        let state = ChatSyncState(file: paths.switcherHome.appendingPathComponent("chat-sync-state.json"))
+        Switcher.syncChatsBeforeLaunch(target: target, among: profiles, openFolders: open, transfer: transfer, state: state,
+                                       lastUsed: { ProfileStore.lastUsed($0.path) }, relation: cache.wrap(TranscriptDiff.compareContinuation),
+                                       problem: { self.pinSyncNotes.set($0, $1) }, log: { self.log($0) }, logError: { self.logError($0) })
+        cache.save()
+    }
+
+    /// The part of the chat sync that is testable without Claude. `openFolders`: a target among them is left alone.
+    /// The log gets counts only, never chat ids, titles or paths.
+    static func syncChatsBeforeLaunch(target: Profile, among: [Profile], openFolders: [URL], transfer: ChatTransfer, state: ChatSyncState? = nil,
+                                      lastUsed: (Profile) -> Date?,
+                                      relation: (URL, URL) throws -> TranscriptRelation = TranscriptDiff.compareContinuation,
+                                      trash: (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) },
+                                      problem: (String, String?) -> Void, log: (String) -> Void, logError: (String) -> Void) {
+        if openFolders.contains(where: { ProfileStore.sameItem($0, target.path) }) { return }
+        guard let source = PinSync.source(for: target, among: among, lastUsed: lastUsed, transfer: transfer) else { return }
+        let plan = ChatSync.plan(target: target, source: source, transfer: transfer, baseline: state?.agreed ?? [:], relation: relation)
+        problem(ChatSync.noteKey(target), ChatSync.note(plan, source: source, target: target))
+        guard !plan.isEmpty else { state?.record(plan, unsettled: []); state?.save(); return }
+        do {
+            let r = try ChatSync.apply(plan, to: target, openFolders: openFolders, trash: trash)
+            state?.record(plan, unsettled: r.unsettled)
+            state?.save()
+            if r.changed > 0 {
+                log("Chats synced from '\(source.name)' to '\(target.name)' (\(r.histories) history, \(r.archived) archived, \(r.unarchived) unarchived, \(r.renamed) renamed, \(r.deleted) deleted)")
+            }
+            if r.failed > 0 { logError("Chat sync for '\(target.name)': \(r.failed) record(s) not written") }
+        } catch {
+            logError("Chat sync for '\(target.name)' failed: \((error as? SwitcherError)?.logText ?? Switcher.describe(error))")
+        }
+    }
+
     /// Before an account opens: its pins for chats it shares follow the account used last.
     /// A failure is logged (no chat ids or titles) and the launch goes on, except a failed restore, which is returned.
     /// Runs on the launch's background queue; the caller holds the starting claim.
@@ -266,7 +305,7 @@ public final class Switcher {
             log("Pins synced from '\(source.name)' to '\(target.name)' (\(pinned) pinned, \(unpinned) unpinned)")
         } catch {
             // Fixed, path-free reasons only: the user-facing messages quote file paths and the log is pasted into bug reports.
-            let reason = (error as? SwitcherError)?.logReason ?? Switcher.describe(error)
+            let reason = (error as? SwitcherError)?.logText ?? Switcher.describe(error)
             if let e = error as? SwitcherError, let note = pinSyncNote(for: e, target: target) { problem(target.id, note) }
             logError("Pin sync for '\(target.name)' failed: \(reason)")
             if let e = error as? SwitcherError, e.logReason == "pin store restore failed" {

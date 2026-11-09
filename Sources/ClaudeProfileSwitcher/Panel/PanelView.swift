@@ -431,9 +431,9 @@ struct SettingsSection: View {
                 }
             }
             if state.rows.count > 1 || !state.syncPins {
-                ToggleRow(title: L("Sync pins across accounts", "Pinleri hesaplar arasında eşitle"),
-                          detail: L("When an account opens, pins of the chats it shares with the account you used last follow that account, in the same order.",
-                                    "Bir hesap açılırken, en son kullandığınız hesapla ortak sohbetlerin pinleri o hesaptaki sırayla gelir."),
+                ToggleRow(title: L("Sync chats and pins across accounts", "Sohbetleri ve pinleri hesaplar arasında eşitle"),
+                          detail: L("When an account opens, the chats it shares with the account you used last follow that account: the latest history, archived state, title, deletions and pins in the same order.",
+                                    "Bir hesap açılırken, en son kullandığınız hesapla ortak sohbetler o hesaba uyar: en yeni geçmiş, arşiv durumu, başlık, silinenler ve aynı sıradaki pinler."),
                           isOn: Binding(get: { state.syncPins }, set: { state.actions.setSyncPins($0) }))
                 if state.syncPins {
                     ForEach(state.pinSyncProblems.filter { !$0.restoreBlock }) { problem in

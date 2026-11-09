@@ -50,6 +50,13 @@ final class PinSyncTests: XCTestCase {
         try PinSync.apply(plan, to: t, transfer: transfer, openFolders: openFolders, backups: backupsDir, logError: { _ in })
     }
 
+    func testAPinOfAChatDeletedInTheTargetIsDropped() throws {
+        let s = try profile("S", chats: ["local_a"], pins: ["local_a"], deleted: ["b"])
+        let t = try profile("T", chats: ["local_a"], pins: ["local_b", "local_a"], deleted: ["b"])
+        let plan = try XCTUnwrap(PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in }).change)
+        XCTAssertEqual(plan.newPins, ["local_a"])
+    }
+
     func testLastUsedOrderWinsForSharedPins() throws {
         let s = try profile("S", chats: ["local_a", "local_b", "local_c"], pins: ["local_c", "local_a"])
         let t = try profile("T", chats: ["local_a", "local_b", "local_c", "local_x"], pins: ["local_a", "local_x", "local_c"])

@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Chat sync, part of the pin sync switch (now **Sync chats and pins across accounts**, still `SyncPins` in
+  `settings.json`, on by default): when the switcher opens an account, the chats it shares with the account
+  you used last follow that account, just before their pins. A copy whose history only lags behind a newer
+  history file Claude started on resume is pointed at it; archived state and title follow the account where
+  they changed since the last sync (remembered in `chat-sync-state.json`, titles only as a hash);
+  a chat deleted there is deleted here the way Claude does it (record to the Trash, `deleted_<id>` marker),
+  unless it was used here afterwards. Forked copies are left alone and counted in the panel. History files
+  are never touched, the account must be closed, and every changed record is backed up first. How two
+  history files compare is cached in `chat-sync-cache.json`.
+
+### Changed
+
+- Pin sync drops the pin of a chat deleted in the account being opened.
+- A failed pin store write now logs the step that failed and its fixed reason.
+
 ### Fixed
 
 - Shared chats got the direction wrong for a chat Claude resumed under a new history file (a new

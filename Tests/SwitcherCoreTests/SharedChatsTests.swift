@@ -136,6 +136,32 @@ final class TranscriptDiffTests: XCTestCase {
         XCTAssertEqual(try TranscriptDiff.compareContinuation(older: old, newer: new), .forked(first: 1, second: 2))
     }
 
+    /// The older file is read from its end; small chunks put line breaks on every chunk boundary.
+    func testContinuationReadsTheOlderFileBackwardsAcrossChunks() throws {
+        let saved = TranscriptDiff.chunkSize
+        TranscriptDiff.chunkSize = 7
+        defer { TranscriptDiff.chunkSize = saved }
+        let old = try write("old.jsonl", [
+            line("u1", session: "old", at: "2025-01-01T10:00:00.000Z"),
+            line("u2", session: "old", at: "2025-01-02T10:00:00.000Z"),
+            line("typed", session: "old", at: "2025-01-03T09:00:00.000Z"),
+        ], trailing: "{\"uuid\":\"torn\"")
+        let new = try write("new.jsonl", [
+            line("u2", session: "new", at: "2025-01-02T10:00:00.000Z"),
+            line("n1", session: "new", at: "2025-01-03T09:01:00.000Z"),
+        ])
+        XCTAssertEqual(try TranscriptDiff.compareContinuation(older: old, newer: new), .secondAhead(messages: 1))
+        let grown = try write("grown.jsonl", [
+            line("u1", session: "old", at: "2025-01-01T10:00:00.000Z"),
+            line("u2", session: "old", at: "2025-01-02T10:00:00.000Z"),
+            line("late", session: "old", at: "2025-01-04T09:00:00.000Z"),
+        ])
+        XCTAssertEqual(try TranscriptDiff.compareContinuation(older: grown, newer: new), .forked(first: 1, second: 1))
+        let unrelated = try write("unrelated.jsonl", [line("x1", session: "x", at: "2025-01-01T10:00:00.000Z")])
+        // Nothing shared: every message counts as the newer file's own; the older one's predate them.
+        XCTAssertEqual(try TranscriptDiff.compareContinuation(older: unrelated, newer: new), .secondAhead(messages: 2))
+    }
+
     func testContinuationWithNothingNewIsIdentical() throws {
         let old = try write("old.jsonl", [line("u1", session: "old", at: "2025-01-01T10:00:00.000Z")])
         let new = try write("new.jsonl", [line("u1", session: "new", at: "2025-01-01T10:00:00.000Z")])

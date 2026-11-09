@@ -173,6 +173,12 @@ final class ClaudePinStoreTests: XCTestCase {
             try h.seekToEnd(); try h.write(contentsOf: Data([1, 2, 3]))
         }
         expectRefusal("pin store write failed") { try ClaudePinStore.write(["local_a"], to: p, backups: self.backups, now: self.now) }
+        // The log names the step that failed and its fixed reason, never a path.
+        XCTAssertThrowsError(try ClaudePinStore.write(["local_a"], to: p, backups: backups, now: now)) {
+            let text = ($0 as? SwitcherError)?.logText ?? ""
+            XCTAssertTrue(text.hasPrefix("pin store write failed (indexeddb append: "), text)
+            XCTAssertFalse(text.contains("/"), text)
+        }
         XCTAssertEqual(try ClaudeStoreFixture.snapshot(ClaudeStoreFixture.lsFolder(p)), lsBefore)
         XCTAssertEqual(try ClaudeStoreFixture.snapshot(ClaudeStoreFixture.idbFolder(p)), idbBefore)
     }
