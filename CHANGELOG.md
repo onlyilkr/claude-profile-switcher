@@ -15,15 +15,18 @@ history file is read the right way round.
   `settings.json`, on by default): when the switcher opens an account, the chats it shares with the account
   you used last follow that account, just before their pins. A copy whose history only lags behind a newer
   history file Claude started on resume is pointed at it; archived state and title follow the account where
-  they changed since the last sync (remembered in `chat-sync-state.json`, titles only as a hash);
-  a chat deleted there is deleted here the way Claude does it (record to the Trash, `deleted_<id>` marker),
-  unless it was used here afterwards. Forked copies are left alone and counted in the panel. History files
+  they changed, judged against what each account had at its own last sync (`chat-sync-state.json`, titles
+  only as a hash), so a stale third account undoes nothing; a chat deleted there is deleted here the way
+  Claude does it (record to the Trash, `deleted_<id>` marker), only if both accounts had it at an earlier
+  sync (a chat copied here and then deleted at its origin is a move and stays) and it was not used here
+  afterwards. Forked copies are left alone and counted in the panel. History files
   are never touched, the account must be closed, and every changed record is backed up first. How two
   history files compare is cached in `chat-sync-cache.json`.
 
 ### Changed
 
-- Pin sync drops the pin of a chat deleted in the account being opened.
+- Pin sync drops the pin of a chat deleted in the account being opened (one still alive in another of its
+  organisation folders keeps it).
 - A failed pin store write now logs the step that failed and its fixed reason.
 
 ### Fixed
@@ -34,8 +37,9 @@ history file is read the right way round.
   line carries its own session id. Such copies are now compared by message id: the old copy reads as behind
   (or forked, when it was also continued after the resume), and the newer copy as up to date.
 - Sync can now bring a copy like that to its continuation: it skipped it before with "The record points at a
-  different history". The old history file and its side folder go to the backups as usual, and Sync refuses
-  while either history is still running in Claude or when the old copy changed since it was checked.
+  different history". The old history file stays where it is, since the kept copy's record names it as an
+  earlier history Claude may read the start of the chat from; Sync refuses while either history is still
+  running in Claude or when the old copy changed since it was checked.
 - Sync reported a copy in the same folder as linked, and wrote nothing, when its record still named the
   history the winner's continues.
 - Comparing a chat's histories no longer reads the whole older file: it reads it from its end back to the last

@@ -57,6 +57,18 @@ final class PinSyncTests: XCTestCase {
         XCTAssertEqual(plan.newPins, ["local_a"])
     }
 
+    func testAPinOfAChatDeletedInOneOrganisationButAliveInAnotherStays() throws {
+        let s = try profile("S", chats: ["local_a"], pins: ["local_a"])
+        let t = try profile("T", chats: ["local_a"], pins: ["local_b", "local_a"])
+        let other = ChatTransfer.sessionRoot(t).appendingPathComponent("acct").appendingPathComponent("org2")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: ["sessionId": "local_b", "cliSessionId": "cli-b"]).write(to: other.appendingPathComponent("local_b.json"))
+        try Data().write(to: ChatTransfer.sessionRoot(t).appendingPathComponent("acct/org/deleted_b"))
+        let outcome = try PinSync.plan(target: t, source: s, transfer: transfer, logError: { _ in })
+        let after = try outcome.change?.newPins ?? storePins(t)
+        XCTAssertEqual(after, ["local_a", "local_b"])
+    }
+
     func testLastUsedOrderWinsForSharedPins() throws {
         let s = try profile("S", chats: ["local_a", "local_b", "local_c"], pins: ["local_c", "local_a"])
         let t = try profile("T", chats: ["local_a", "local_b", "local_c", "local_x"], pins: ["local_a", "local_x", "local_c"])

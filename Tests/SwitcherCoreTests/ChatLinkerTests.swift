@@ -471,11 +471,11 @@ final class ChatLinkerTests: XCTestCase {
         XCTAssertEqual(report, LinkReport(linked: ["Two"]))
         XCTAssertEqual(try obj(recordURL(lose))["cliSessionId"] as? String, "cli-2222")
         XCTAssertEqual(try obj(recordURL(lose))["cwd"] as? String, winCwd)
-        // The old history and its side folder went to the backups, never deleted.
-        XCTAssertFalse(FileManager.default.fileExists(atPath: transcript(loseCwd).path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: TranscriptLocator.sidecar(root: paths.transcriptsRoot, cwd: loseCwd, cliSessionID: cli).path))
-        XCTAssertTrue(backupFiles().contains { $0.hasSuffix("\(cli).jsonl") })
-        XCTAssertTrue(backupFiles().contains { $0.hasSuffix("\(cli)/f.txt") })
+        // The winner's record names the old history as a prior one: Claude may still read the start of the chat
+        // from it, so it stays where it is, with its side folder.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: transcript(loseCwd).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: TranscriptLocator.sidecar(root: paths.transcriptsRoot, cwd: loseCwd, cliSessionID: cli).path))
+        XCTAssertFalse(backupFiles().contains { $0.hasSuffix(".jsonl") })
     }
 
     /// Both copies in the same folder without a worktree (the plain resume): the loser is not "already linked",
@@ -498,9 +498,8 @@ final class ChatLinkerTests: XCTestCase {
         let report = try linker().link(c, winner: "Default", profiles: [win, lose])
         XCTAssertEqual(report, LinkReport(linked: ["Two"]))
         XCTAssertEqual(try obj(recordURL(lose))["cliSessionId"] as? String, newCli)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: transcript(winCwd).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: transcript(winCwd).path), "a prior history stays")
         XCTAssertTrue(FileManager.default.fileExists(atPath: newTranscript.path))
-        XCTAssertTrue(backupFiles().contains { $0.hasSuffix("\(cli).jsonl") })
     }
 
     func testSyncRefusesWhenTheOldHistoryGrewAfterTheScan() throws {

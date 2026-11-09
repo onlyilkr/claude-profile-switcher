@@ -237,6 +237,9 @@ public struct ChatLinker {
                                                      "Eski geçmiş dosyası yerinde bırakıldı: başka bir hesabın kopyası hâlâ onu kullanıyor.")
                 continue
             }
+            // A history the chat now continues (named in a record's priorCliSessionIds) holds the start of the chat,
+            // which the newer file may repeat only in part: it stays where Claude can read it.
+            if chat.copies.contains(where: { $0.priorCliSessionIDs.contains(plan.loserCli) }) { continue }
             do { try writing(plan.profile) { try moveToBackup(plan.copy, cli: plan.loserCli, profileID: plan.profile.id, stamp: stamp) } } catch {
                 report.warnings[plan.profile.id] = L("Linked, but its old history file could not be moved: \(error.localizedDescription)",
                                                      "Bağlandı, ama eski geçmiş dosyası taşınamadı: \(error.localizedDescription)")
