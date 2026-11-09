@@ -90,6 +90,9 @@ public final class Settings {
     /// Once a day, ask GitHub for the latest release and say when one is newer. Absent means on.
     public var checkForUpdates: Bool { self["CheckForUpdates"] as? Bool != false }
 
+    /// The panel's Settings section is open. Absent means closed: the panel opens as a short list of accounts.
+    public var showSettings: Bool { self["ShowSettings"] as? Bool == true }
+
     /// Extra environment for one account's Claude, from "ProfileEnv": { "<id>": { "NAME": "value" } }.
     /// Names must be letters, digits and _, not starting with a digit; others are skipped.
     public func profileEnv(_ id: String) -> [String: String] {

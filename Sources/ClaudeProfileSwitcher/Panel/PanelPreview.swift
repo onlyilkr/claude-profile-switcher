@@ -124,6 +124,17 @@ enum PanelPreview {
             ]
             s.routingOn = true
             s.highlighted = "Work"
+            s.settingsExpanded = true
+            return s
+        }),
+        // How the panel opens: accounts only, with a newer release to tell about.
+        ("compact", {
+            let s = base()
+            s.rows = [
+                row(Profile.defaultID, .open, last: 0, session: 38),
+                row("Work", .closed, color: 0, last: 3600, session: 81),
+            ]
+            s.updateAvailable = "1.4.0"
             return s
         }),
         ("usage-paused", {
@@ -153,6 +164,11 @@ enum PanelPreview {
             s.linkChats = true
             s.linkableChats = 3
             s.syncPins = true
+            s.settingsExpanded = true
+            s.expandedInfo = "link"
+            s.pinSyncProblems = [PinSyncNote(id: "Work", text: L("1 shared chat(s) went separate ways in 'Default' and 'Work'; keep one with Shared chats.",
+                                                                      "1 ortak sohbet 'Default' ve 'Work' hesaplarında ayrı yönlere ilerledi; Ortak sohbetler'den birini seçin."),
+                                                  restoreBlock: false)]
             return s
         }),
         ("first-run", {
@@ -178,6 +194,7 @@ enum PanelPreview {
     static func base() -> PanelState {
         let s = PanelState()
         s.claudeVersion = "4.29.0"
+        s.appVersion = "1.3.0"
         s.claudeIcon = NSWorkspace.shared.icon(forFile: "/Applications/Claude.app")
         s.claudeIcon?.size = NSSize(width: 26, height: 26)
         return s

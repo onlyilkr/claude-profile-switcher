@@ -86,6 +86,11 @@ public enum UpdateCheck {
         URL(string: "https://github.com/\(repository)/releases/tag/v\(version)")!
     }
 
+    /// The release notes of the running version; the list of releases for a build without a plain version.
+    public static func notesPage(for current: String) -> URL {
+        AppVersion(current).map(releasePage) ?? URL(string: "https://github.com/\(repository)/releases")!
+    }
+
     /// A day after the last successful check; also when the clock went back past it.
     public static func isDue(lastCheck: Date?, now: Date) -> Bool {
         guard let lastCheck else { return true }

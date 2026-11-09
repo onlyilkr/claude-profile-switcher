@@ -14,6 +14,19 @@ All notable changes to this project are documented here. The format follows
   page otherwise; the cross hides the note until the next release. It is the switcher's only network request:
   no cookies or credentials, nothing about accounts or chats, only the version number is read from the
   answer, and the switcher never downloads or replaces itself. Turning it off means no network requests.
+- The switcher's own version at the bottom of the panel, over Claude's; a click opens that release's notes.
+
+### Changed
+
+- The panel opens as a short list of accounts, like a menu. The switches moved into one **Settings** group
+  that stays closed until you open it, and remembers how you left it (`ShowSettings` in `settings.json`).
+- Each switch is one line; its explanation is behind an info button next to it, one open at a time.
+- **Keep worktree chats linked across accounts (experimental)** is now **Keep worktree chats linked**, marked
+  *Experimental*; its title no longer gets cut off.
+- What needs your attention (accounts whose chats or pins could not be synced, chats that went separate ways,
+  chats still to link) shows in notes under the accounts, also while Settings is closed, instead of under a switch.
+- Switches are a size larger, notices share one look, **Quit** shows its shortcut, and the "N open" count carries
+  the green dot of an open account's ring.
 
 ## [1.2.0] - 2026-11-10
 

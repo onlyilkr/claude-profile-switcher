@@ -48,6 +48,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.action = #selector(togglePanel)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
+        state.appVersion = appVersion
+        state.settingsExpanded = switcher?.settings.showSettings ?? false
         panel = PanelController(state: state, button: statusItem.button)
         panel.onShow = { [weak self] in self?.refresh(); self?.scanSharedChats() }
         panel.onTick = { [weak self] in self?.refresh() }
@@ -304,6 +306,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.save("CheckForUpdates", on)
             self?.refresh()
             self?.checkForUpdates()
+        }
+        a.setSettingsExpanded = { [weak self] on in self?.save("ShowSettings", on ? true : nil) }
+        a.openReleaseNotes = { [weak self] in
+            guard let self else { return }
+            self.panel.close()
+            NSWorkspace.shared.open(UpdateCheck.notesPage(for: self.appVersion))
         }
         a.update = { [weak self] in self?.performUpdate() }
         a.dismissUpdate = { [weak self] in self?.dismissUpdate() }

@@ -89,6 +89,10 @@ struct PanelActions {
     /// Runs `brew upgrade` in Terminal for a Homebrew install, otherwise opens the release page.
     var update: () -> Void = {}
     var dismissUpdate: () -> Void = {}
+    /// Remembers whether the Settings section is open.
+    var setSettingsExpanded: (Bool) -> Void = { _ in }
+    /// The release notes of the running version, in the browser.
+    var openReleaseNotes: () -> Void = {}
     var quit: () -> Void = {}
     var downloadClaude: () -> Void = {}
 }
@@ -99,6 +103,12 @@ final class PanelState: ObservableObject {
     @Published var rows: [AccountRow] = []
     @Published var claudeIcon: NSImage?
     @Published var claudeVersion = ""
+    /// The switcher's own version, shown in the footer ("1.3.0", or "dev" for a build without one).
+    @Published var appVersion = ""
+    /// The Settings section is open; closed, the panel is a short list of accounts.
+    @Published var settingsExpanded = false
+    /// The setting whose explanation is open (one at a time). Kept here, not in the row, so the panel refits.
+    @Published var expandedInfo: String?
     @Published var claudeMissing: String?
 
     @Published var routingOn = false

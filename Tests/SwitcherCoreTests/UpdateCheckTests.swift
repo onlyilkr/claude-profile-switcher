@@ -188,6 +188,21 @@ final class UpdateCheckTests: XCTestCase {
         XCTAssertTrue(settings.checkForUpdates)
     }
 
+    /// The version in the panel's footer opens that release's notes; a build without a version opens the list.
+    func testTheNotesPageOfTheRunningVersion() {
+        XCTAssertEqual(UpdateCheck.notesPage(for: "1.3.0").absoluteString,
+                       "https://github.com/onlyilkr/claude-profile-switcher/releases/tag/v1.3.0")
+        XCTAssertEqual(UpdateCheck.notesPage(for: "dev").absoluteString, "https://github.com/onlyilkr/claude-profile-switcher/releases")
+        XCTAssertEqual(UpdateCheck.notesPage(for: "1.3.0/../x").absoluteString, "https://github.com/onlyilkr/claude-profile-switcher/releases")
+    }
+
+    func testTheSettingsSectionStartsClosedAndRemembersBeingOpened() throws {
+        let settings = Settings(file: home.appendingPathComponent("settings.json"))
+        XCTAssertFalse(settings.showSettings)
+        try settings.set("ShowSettings", true)
+        XCTAssertTrue(settings.showSettings)
+    }
+
     func testTheStateAndScriptLiveInTheSwitchersFolder() {
         let paths = Paths(home: home)
         XCTAssertEqual(paths.updateState.deletingLastPathComponent(), paths.switcherHome)

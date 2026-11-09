@@ -3,7 +3,8 @@ import SwitcherCore
 
 /// The panel under the menu bar icon. Native materials, system type and colours: the only
 /// colour of its own is each account's identity, and the one thing that moves is the ring
-/// around an account that is opening.
+/// around an account that is opening. It opens as a short list of accounts, like a menu; the
+/// settings sit in one group below that stays closed until asked for.
 struct PanelView: View {
     @ObservedObject var state: PanelState
 
@@ -26,6 +27,7 @@ struct PanelView: View {
                 }
                 accounts
                 PanelDivider()
+                AttentionNotes(state: state)
                 SettingsSection(state: state)
             }
             PanelDivider()
@@ -40,15 +42,20 @@ struct PanelView: View {
                 .font(.system(size: 13, weight: .semibold))
             Spacer()
             if state.openCount > 0 {
-                Text(L("\(state.openCount) open", "\(state.openCount) açık"))
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                // The dot is the legend of the green ring below.
+                HStack(spacing: 5) {
+                    Circle().fill(Color(nsColor: .systemGreen)).frame(width: 6, height: 6)
+                    Text(L("\(state.openCount) open", "\(state.openCount) açık"))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                .accessibilityElement(children: .combine)
             }
         }
         .padding(.horizontal, 16)
         .padding(.top, 13)
-        .padding(.bottom, 6)
+        .padding(.bottom, 7)
     }
 
     @ViewBuilder private var accounts: some View {
@@ -73,20 +80,37 @@ struct PanelView: View {
         }
     }
 
+    /// The switcher's own version (a click opens its release notes) over Claude's, and Quit.
     private var footer: some View {
-        HStack {
-            if !state.claudeVersion.isEmpty {
-                Text("Claude \(state.claudeVersion)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 1) {
+                if !state.appVersion.isEmpty {
+                    Button { state.actions.openReleaseNotes() } label: {
+                        Text(L("Version \(state.appVersion)", "Sürüm \(state.appVersion)"))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(L("Claude Profile Switcher \(state.appVersion). Click for its release notes.",
+                            "Claude Profile Switcher \(state.appVersion). Sürüm notları için tıklayın."))
+                }
+                if !state.claudeVersion.isEmpty {
+                    Text("Claude \(state.claudeVersion)")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                }
             }
             Spacer()
-            Button(L("Quit", "Çık")) { state.actions.quit() }
-                .buttonStyle(.plain)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .help(L("Quit Claude Profile Switcher (⌘Q). Your Claude windows stay open.",
-                        "Claude Profile Switcher'dan çık (⌘Q). Claude pencereleriniz açık kalır."))
+            Button { state.actions.quit() } label: {
+                HStack(spacing: 6) {
+                    Text(L("Quit", "Çık")).font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text("⌘Q").font(.system(size: 11)).foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(L("Quit Claude Profile Switcher. Your Claude windows stay open.",
+                    "Claude Profile Switcher'dan çık. Claude pencereleriniz açık kalır."))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
@@ -388,113 +412,218 @@ struct Highlight: View {
 
 // MARK: Settings and banners
 
-struct SettingsSection: View {
+/// What the switcher left for the user to look at, always in view (also while Settings is closed):
+/// accounts whose chats or pins could not be synced, and chats that still need linking.
+struct AttentionNotes: View {
     @ObservedObject var state: PanelState
 
+    private var problems: [PinSyncNote] { state.pinSyncProblems.filter { $0.restoreBlock || state.syncPins } }
+    private var linkable: Int { state.linkChats ? state.linkableChats : 0 }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Routing only means something once there is a second account to route to.
-            if state.rows.count > 1 || state.routingOn {
-                ToggleRow(title: L("Send sign-ins to the right account", "Girişleri doğru hesaba gönder"),
-                          detail: L("Browser sign-ins open in the account that asked.", "Tarayıcı girişleri isteyen hesapta açılır."),
-                          isOn: Binding(get: { state.routingOn }, set: { state.actions.setRouting($0) }))
-            }
-            if state.routingOn, state.rows.count > 1 {
-                HStack {
-                    Text(L("Open other claude:// links in", "Diğer claude:// linklerini aç"))
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Picker("", selection: Binding(get: { state.otherLinksID }, set: { state.actions.setOtherLinks($0) })) {
-                        ForEach(state.rows) { Text($0.name).tag($0.id) }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .controlSize(.small)
-                    .fixedSize()
-                }
-            }
-            if state.rows.count > 1 || state.linkChats {
-                ToggleRow(title: L("Keep worktree chats linked across accounts (experimental)", "Worktree sohbetlerini hesaplar arasında bağlı tut (deneysel)"),
-                          detail: linkDetail,
-                          isOn: Binding(get: { state.linkChats }, set: { state.actions.setLinkChats($0) }))
-            }
-            // Right under the setting, so turning it on shows what to do next.
-            if state.linkChats, state.linkableChats > 0 {
-                HStack {
-                    Text(state.linkableChats == 1 ? L("1 chat isn't linked yet", "1 sohbet henüz bağlı değil")
-                                                  : L("\(state.linkableChats) chats aren't linked yet", "\(state.linkableChats) sohbet henüz bağlı değil"))
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button(L("Link all", "Tümünü bağla")) { state.actions.linkAll() }
-                        .controlSize(.small)
-                }
-            }
-            if state.rows.count > 1 || !state.syncPins {
-                ToggleRow(title: L("Sync chats and pins across accounts", "Sohbetleri ve pinleri hesaplar arasında eşitle"),
-                          detail: L("When an account opens, the chats it shares with the account you used last follow that account: the latest history, archived state, title, deletions and pins in the same order.",
-                                    "Bir hesap açılırken, en son kullandığınız hesapla ortak sohbetler o hesaba uyar: en yeni geçmiş, arşiv durumu, başlık, silinenler ve aynı sıradaki pinler."),
-                          isOn: Binding(get: { state.syncPins }, set: { state.actions.setSyncPins($0) }))
-                if state.syncPins {
-                    ForEach(state.pinSyncProblems.filter { !$0.restoreBlock }) { problem in
+        if !problems.isEmpty || linkable > 0 {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(problems) { problem in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.circle")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color(nsColor: .systemOrange))
+                            .frame(width: 16)
                         Text(problem.text)
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                if linkable > 0 {
+                    HStack(spacing: 8) {
+                        Image(systemName: "link").font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 16)
+                        Text(linkable == 1 ? L("1 chat isn't linked yet", "1 sohbet henüz bağlı değil")
+                                           : L("\(linkable) chats aren't linked yet", "\(linkable) sohbet henüz bağlı değil"))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(L("Link all", "Tümünü bağla")) { state.actions.linkAll() }
+                            .controlSize(.small)
+                    }
+                }
             }
-            // An account kept closed after a failed pin restore, with or without pin sync.
-            ForEach(state.pinSyncProblems.filter(\.restoreBlock)) { problem in
-                Text(problem.text)
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+        }
+    }
+}
+
+/// One switch of the Settings group. `detail` is the explanation behind the info button.
+struct SettingItem: Identifiable {
+    let id: String
+    let title: String
+    /// A short word after the title ("Experimental").
+    var tag: String? = nil
+    var detail: String? = nil
+    let isOn: Binding<Bool>
+    /// What belongs to the switch and shows under it (a picker, a warning).
+    var extra: AnyView? = nil
+}
+
+/// The switches, in one group that stays closed until asked for, so the panel opens as a list of accounts.
+/// Each explanation is behind its info button, one open at a time.
+struct SettingsSection: View {
+    @ObservedObject var state: PanelState
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                state.settingsExpanded.toggle()
+                if !state.settingsExpanded { state.expandedInfo = nil }
+                state.actions.setSettingsExpanded(state.settingsExpanded)
+            } label: {
+                HStack {
+                    Text(L("Settings", "Ayarlar"))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(state.settingsExpanded ? 90 : 0))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Highlight(on: hovering))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering = $0 }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .accessibilityLabel(L("Settings", "Ayarlar"))
+            .accessibilityValue(state.settingsExpanded ? L("open", "açık") : L("closed", "kapalı"))
+
+            if state.settingsExpanded {
+                let items = self.items
+                VStack(spacing: 0) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                        if index > 0 { Divider().padding(.leading, 12) }
+                        SettingRow(item: item, state: state)
+                    }
+                }
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
+                .padding(.horizontal, 10)
+                .padding(.bottom, 10)
+            }
+        }
+    }
+
+    private var items: [SettingItem] {
+        var out: [SettingItem] = []
+        // Routing only means something once there is a second account to route to.
+        if state.rows.count > 1 || state.routingOn {
+            out.append(SettingItem(
+                id: "routing", title: L("Send sign-ins to the right account", "Girişleri doğru hesaba gönder"),
+                detail: L("Google sign-ins and email links can land in whichever Claude macOS picks. With this on, each one opens in the account that asked.",
+                          "Google girişleri ve e-posta linkleri macOS'un seçtiği Claude'a düşebilir. Bu açıkken her giriş, isteyen hesapta açılır."),
+                isOn: Binding(get: { state.routingOn }, set: { state.actions.setRouting($0) }),
+                extra: state.routingOn && state.rows.count > 1 ? AnyView(otherLinks) : nil))
+        }
+        if state.rows.count > 1 || !state.syncPins {
+            out.append(SettingItem(
+                id: "sync", title: L("Sync chats and pins across accounts", "Sohbetleri ve pinleri hesaplar arasında eşitle"),
+                detail: L("When an account opens, the chats it shares with the account you used last follow that account: the latest history, archived state, title, deletions and pins in the same order.",
+                          "Bir hesap açılırken, en son kullandığınız hesapla ortak sohbetler o hesaba uyar: en yeni geçmiş, arşiv durumu, başlık, silinenler ve aynı sıradaki pinler."),
+                isOn: Binding(get: { state.syncPins }, set: { state.actions.setSyncPins($0) })))
+        }
+        if state.rows.count > 1 || state.linkChats {
+            out.append(SettingItem(
+                id: "link", title: L("Keep worktree chats linked", "Worktree sohbetlerini bağlı tut"),
+                tag: L("Experimental", "Deneysel"),
+                detail: L("Same folder and history in every account. Don't use a chat in two accounts at once; deleting it deletes its history everywhere; archive it in every account together. Tried with Claude \(LinkPolicy.testedVersion).",
+                          "Her hesapta aynı klasör ve geçmiş. Bir sohbeti iki hesapta aynı anda kullanmayın; silmek geçmişi her yerde siler; arşivlemeyi bütün hesaplarda birlikte yapın. Claude \(LinkPolicy.testedVersion) ile denendi."),
+                isOn: Binding(get: { state.linkChats }, set: { state.actions.setLinkChats($0) }),
+                extra: untried.map { AnyView(Text($0).font(.system(size: 11)).foregroundStyle(Color(nsColor: .systemOrange))) }))
+        }
+        out.append(SettingItem(
+            id: "updates", title: L("Check for updates", "Güncellemeleri denetle"),
+            detail: L("Once a day, asks GitHub for the latest release of the switcher. Nothing about your accounts or chats is sent.",
+                      "Günde bir kez, switcher'ın en son sürümünü GitHub'a sorar. Hesaplarınız veya sohbetleriniz hakkında hiçbir şey gönderilmez."),
+            isOn: Binding(get: { state.checkUpdates }, set: { state.actions.setCheckUpdates($0) })))
+        out.append(SettingItem(id: "login", title: L("Open at login", "Oturum açılışında başlat"),
+                               isOn: Binding(get: { state.loginItem }, set: { state.actions.setLogin($0) })))
+        return out
+    }
+
+    /// Linking was tried with one Claude version; say so, in view, when this one is another.
+    private var untried: String? {
+        guard !state.claudeVersion.isEmpty, !LinkPolicy.isTested(state.claudeVersion) else { return nil }
+        let v = LinkPolicy.shortVersion(state.claudeVersion)
+        return L("Not yet tried with Claude \(v)", "Claude \(v) ile henüz denenmedi")
+    }
+
+    private var otherLinks: some View {
+        HStack {
+            Text(L("Open other claude:// links in", "Diğer claude:// linklerini aç"))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Picker("", selection: Binding(get: { state.otherLinksID }, set: { state.actions.setOtherLinks($0) })) {
+                ForEach(state.rows) { Text($0.name).tag($0.id) }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .controlSize(.small)
+            .fixedSize()
+        }
+    }
+}
+
+struct SettingRow: View {
+    let item: SettingItem
+    @ObservedObject var state: PanelState
+
+    private var showingInfo: Bool { state.expandedInfo == item.id }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 8) {
+                // Takes all the width the info button and the switch leave, so it wraps only when it must.
+                title.frame(maxWidth: .infinity, alignment: .leading)
+                if item.detail != nil {
+                    Button { state.expandedInfo = showingInfo ? nil : item.id } label: {
+                        Image(systemName: showingInfo ? "info.circle.fill" : "info.circle")
+                            .font(.system(size: 12))
+                            .foregroundStyle(showingInfo ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
+                            .frame(width: 18, height: 18)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(item.detail ?? "")
+                    .accessibilityLabel(L("About \(item.title)", "\(item.title) hakkında"))
+                }
+                Toggle(item.title, isOn: item.isOn)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+            }
+            if showingInfo, let detail = item.detail {
+                Text(detail)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            ToggleRow(title: L("Check for updates", "Güncellemeleri denetle"),
-                      detail: L("Once a day, asks GitHub for the latest release of the switcher. Nothing about your accounts or chats is sent.",
-                                "Günde bir kez, switcher'ın en son sürümünü GitHub'a sorar. Hesaplarınız veya sohbetleriniz hakkında hiçbir şey gönderilmez."),
-                      isOn: Binding(get: { state.checkUpdates }, set: { state.actions.setCheckUpdates($0) }))
-            ToggleRow(title: L("Open at login", "Oturum açılışında başlat"), detail: nil,
-                      isOn: Binding(get: { state.loginItem }, set: { state.actions.setLogin($0) }))
+            if let extra = item.extra { extra }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.leading, 12)
+        .padding(.trailing, 10)
+        .padding(.vertical, 8)
     }
-}
 
-private extension SettingsSection {
-    var linkDetail: String {
-        var text = L("Same folder and history in every account. Don't use a chat in two accounts at once; deleting it deletes its history everywhere; archive it in every account together. Tried with Claude \(LinkPolicy.testedVersion).",
-                     "Her hesapta aynı klasör ve geçmiş. Bir sohbeti iki hesapta aynı anda kullanmayın; silmek geçmişi her yerde siler; arşivlemeyi bütün hesaplarda birlikte yapın. Claude \(LinkPolicy.testedVersion) ile denendi.")
-        if !state.claudeVersion.isEmpty, !LinkPolicy.isTested(state.claudeVersion) {
-            let v = LinkPolicy.shortVersion(state.claudeVersion)
-            text += "\n" + L("Not yet tried with Claude \(v)", "Claude \(v) ile henüz denenmedi")
+    private var title: some View {
+        var text = Text(item.title).font(.system(size: 13))
+        if let tag = item.tag {
+            text = text + Text("  " + tag).font(.system(size: 11, weight: .medium)).foregroundColor(Color(nsColor: .systemOrange))
         }
-        return text
-    }
-}
-
-struct ToggleRow: View {
-    let title: String
-    let detail: String?
-    let isOn: Binding<Bool>
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.system(size: 13))
-                if let detail {
-                    Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Spacer(minLength: 8)
-            Toggle(title, isOn: isOn)
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .labelsHidden()
-        }
+        return text.fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -520,10 +649,7 @@ struct RoutingBanner: View {
             }
             .controlSize(.small)
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.accentColor.opacity(0.1)))
-        .padding(.horizontal, 10)
-        .padding(.bottom, 6)
+        .noticeBox(Color.accentColor.opacity(0.1))
     }
 }
 
@@ -550,15 +676,9 @@ struct UsagePausedNotice: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
-            Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .accessibilityLabel(L("Dismiss", "Kapat"))
+            DismissButton(action: dismiss)
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.06)))
-        .padding(.horizontal, 10)
-        .padding(.bottom, 6)
+        .noticeBox()
     }
 }
 
@@ -571,20 +691,16 @@ struct UpdateNotice: View {
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             Image(systemName: "arrow.down.circle.fill").foregroundStyle(Color.accentColor)
-            Text(L("Claude Profile Switcher \(version) is available", "Claude Profile Switcher \(version) çıktı"))
+            Text(L("Version \(version) is available", "Sürüm \(version) çıktı"))
                 .font(.system(size: 12, weight: .semibold))
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
-            Button(L("Update", "Güncelle"), action: actions.update).controlSize(.small)
-            Button(action: actions.dismissUpdate) { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .accessibilityLabel(L("Dismiss", "Kapat"))
+            Button(L("Update", "Güncelle"), action: actions.update)
+                .controlSize(.small)
+                .help(L("Updates Claude Profile Switcher to \(version)", "Claude Profile Switcher'ı \(version) sürümüne günceller"))
+            DismissButton(action: actions.dismissUpdate)
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.accentColor.opacity(0.1)))
-        .padding(.horizontal, 10)
-        .padding(.bottom, 6)
+        .noticeBox(Color.accentColor.opacity(0.1))
     }
 }
 
@@ -601,15 +717,9 @@ struct SharedChatsNotice: View {
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             Button(L("Show", "Göster"), action: show).controlSize(.small)
-            Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .accessibilityLabel(L("Dismiss", "Kapat"))
+            DismissButton(action: dismiss)
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.06)))
-        .padding(.horizontal, 10)
-        .padding(.bottom, 6)
+        .noticeBox()
     }
 }
 
@@ -625,15 +735,9 @@ struct ErrorBanner: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             Spacer(minLength: 0)
-            Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .accessibilityLabel(L("Dismiss", "Kapat"))
+            DismissButton(action: dismiss)
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.red.opacity(0.1)))
-        .padding(.horizontal, 10)
-        .padding(.bottom, 6)
+        .noticeBox(Color.red.opacity(0.1))
     }
 }
 
@@ -654,6 +758,33 @@ struct MissingClaudeView: View {
                 .controlSize(.small)
         }
         .padding(16)
+    }
+}
+
+/// The one look of everything the panel says above the accounts.
+extension View {
+    func noticeBox(_ fill: Color = Color.primary.opacity(0.06)) -> some View {
+        padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(fill))
+            .padding(.horizontal, 10)
+            .padding(.bottom, 6)
+    }
+}
+
+struct DismissButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 9, weight: .bold))
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .accessibilityLabel(L("Dismiss", "Kapat"))
     }
 }
 
