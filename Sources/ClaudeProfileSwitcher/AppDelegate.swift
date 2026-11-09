@@ -715,7 +715,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     } catch {
                         // A failed restore keeps the account closed: remembered, and the transfer does not reopen it.
                         if sw.noteRestoreFailure(error, target: target) { o.restoreFailed = true }
-                        sw.logError("Pins for '\(target.name)' not carried: \((error as? SwitcherError)?.logReason ?? Switcher.describe(error))")
+                        sw.logError("Pins for '\(target.name)' not carried: \((error as? SwitcherError)?.logText ?? Switcher.describe(error))")
                         o.skipped.append(L("Pins were not carried over: \(error.localizedDescription)", "Pinler taşınamadı: \(error.localizedDescription)"))
                     }
                     o.store = store

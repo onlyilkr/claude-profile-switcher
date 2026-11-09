@@ -87,15 +87,20 @@ enum ClaudePinStore {
                 if state.pins.matches(wanted) { return false }
                 let plan = try plan(wanted, state, now: now)
                 let backup = try backUp(profile, backups: backups, now: now)
+                var step = "local storage append"
                 do {
                     _ = try LevelDBWriter(folder: lsFolder(profile)).append(plan.lsPuts)
                     try beforeIndexedDBWrite?()
+                    step = "indexeddb append"
                     _ = try LevelDBWriter(folder: idbFolder(profile)).append([plan.idbPut])
+                    step = "verify"
                     try verify(profile, plan, sidebar: wanted)
                 } catch {
                     try restore(profile, from: backup)
+                    let inner = (error as? SwitcherError)?.logText ?? Switcher.describe(error)
                     throw SwitcherError(L("Could not sync pins; Claude's data was left unchanged.",
-                                          "Pinler eşitlenemedi; Claude verisi değişmeden bırakıldı."), logReason: "pin store write failed")
+                                          "Pinler eşitlenemedi; Claude verisi değişmeden bırakıldı."), logReason: "pin store write failed",
+                                        cause: "\(step): \(inner)")
                 }
                 return true
             }

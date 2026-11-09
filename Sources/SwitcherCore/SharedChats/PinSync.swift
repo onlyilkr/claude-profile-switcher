@@ -77,7 +77,10 @@ public enum PinSync {
         var seen = Set<String>()
         var list: [String] = []
         for pin in sourcePins.sidebar where shared.contains(pin) && seen.insert(pin).inserted { list.append(pin) }
-        for pin in targetPins.sidebar where !sourceIDs.contains(pin) && seen.insert(pin).inserted { list.append(pin) }
+        // A pin of a chat the target deleted is dropped: Claude deleted it there, or the chat sync did.
+        // A chat deleted in one organisation folder but alive in another is still there.
+        let deletedHere = transfer.deletedChatIDs(in: target).subtracting(targetIDs)
+        for pin in targetPins.sidebar where !sourceIDs.contains(pin) && !deletedHere.contains(pin) && seen.insert(pin).inserted { list.append(pin) }
 
         // Records of shared chats are checked against the new list, so a run that stopped
         // halfway (store written, some records not) is repaired the next time pins sync into this account.
@@ -135,6 +138,15 @@ extension ChatTransfer {
                     ids.insert(id)
                 }
             }
+        }
+        return ids
+    }
+
+    /// local_<id> of every chat with a deleted marker in the profile.
+    func deletedChatIDs(in profile: Profile) -> Set<String> {
+        var ids = Set<String>()
+        for account in subdirectories(ChatTransfer.sessionRoot(profile)) {
+            for org in subdirectories(account) { for name in deletedMarkers(in: org) { ids.insert("local_" + ChatSync.bare(name)) } }
         }
         return ids
     }

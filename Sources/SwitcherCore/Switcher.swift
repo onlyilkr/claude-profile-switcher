@@ -22,15 +22,28 @@ public final class Switcher {
     /// profile's pin storage was read again without trouble. Read from the main thread, set from wherever the launch runs.
     /// Only profiles that still exist have a note; an account whose pin store was not restored keeps its note
     /// (with the backup folder) until its storage reads clean, also across restarts.
+    /// A chat sync note (shared chats it left to the user, counts only) is joined to the pin note of the same account.
     public var pinSyncProblems: [String: String] {
-        let profiles = Dictionary(store.list(status: false).map { ($0.id.lowercased(), $0) }, uniquingKeysWith: { a, _ in a })
-        var notes = pinSyncNotes.all.filter { profiles[$0.key.lowercased()] != nil }
-        for (id, backup) in restoreFailures.all {
+        Switcher.panelNotes(profiles: store.list(status: false), pin: pinSyncNotes.all, chat: chatSyncNotes.all, restore: restoreFailures.all)
+    }
+
+    /// `pin` and `chat` by profile id, `restore` by lowercased profile id; notes of profiles that are gone are dropped,
+    /// and a failed restore's note replaces the others.
+    static func panelNotes(profiles list: [Profile], pin: [String: String], chat: [String: String], restore: [String: String]) -> [String: String] {
+        let profiles = Dictionary(list.map { ($0.id.lowercased(), $0) }, uniquingKeysWith: { a, _ in a })
+        var notes: [String: String] = [:]
+        for (key, text) in pin { if let p = profiles[key.lowercased()] { notes[p.id] = text } }
+        for (key, text) in chat {
+            guard let p = profiles[key.lowercased()] else { continue }
+            notes[p.id] = notes[p.id].map { $0 + " " + text } ?? text
+        }
+        for (id, backup) in restore {
             if let profile = profiles[id] { notes[profile.id] = Switcher.restoreNote(profile, backup: backup) }
         }
         return notes
     }
     let pinSyncNotes = PinSyncNotes()
+    let chatSyncNotes = PinSyncNotes()
     let restoreFailures: RestoreFailures
 
     public init(paths: Paths = Paths(), ownBundleID: String? = nil, claudePath: String? = nil) throws {
@@ -117,7 +130,8 @@ public final class Switcher {
         beginSync()
         Switcher.syncQueue.async {
             // A failed restore leaves the account's data in doubt: Claude must not start on it, with or without pin sync.
-            let stop = self.refuseAfterFailedRestore(target) ?? (syncOn ? self.syncPinsBeforeLaunch(target) : nil)
+            // Chats first: a chat deleted there is gone here before the pins are planned.
+            let stop = self.refuseAfterFailedRestore(target) ?? (syncOn ? { self.syncChatsBeforeLaunch(target); return self.syncPinsBeforeLaunch(target) }() : nil)
             self.claims.setSyncing(target.id, false)
             DispatchQueue.main.async {
                 self.endSync()
@@ -228,6 +242,50 @@ public final class Switcher {
           "'\(target.name)' açılmadı: başarısız bir pin eşitlemesinden sonra Claude verisi geri yüklenemedi ve Claude bu veriyle başlamamalı. Yedeğiniz şurada: \(backup). Claude başlatılmadı, böylece verisi sıfırlanmadı.")
     }
 
+    /// Before an account opens: the chats it shares follow the account used last (see ChatSync).
+    /// Runs on the launch's background queue; the caller holds the starting claim. Never stops the launch.
+    private func syncChatsBeforeLaunch(_ target: Profile) {
+        let profiles = store.list(status: true)
+        // Read again right before writing: planning can take a while on long histories.
+        let open = { self.store.list(status: true).filter { $0.isRunning || ($0.id != target.id && self.isStarting($0)) }.map(\.path) }
+        let cache = RelationCache(file: paths.switcherHome.appendingPathComponent("chat-sync-cache.json"))
+        let state = ChatSyncState(file: paths.switcherHome.appendingPathComponent("chat-sync-state.json"))
+        Switcher.syncChatsBeforeLaunch(target: target, among: profiles, openFolders: open, transfer: transfer, state: state,
+                                       lastUsed: { ProfileStore.lastUsed($0.path) }, relation: cache.wrap(TranscriptDiff.compareContinuation),
+                                       note: { self.chatSyncNotes.set($0, $1) }, log: { self.log($0) }, logError: { self.logError($0) })
+        cache.save()
+    }
+
+    /// The part of the chat sync that is testable without Claude. `openFolders`: the open and starting accounts, read
+    /// before planning and again right before writing; a target among them is left alone. `note` gets the target's id
+    /// and its panel note (nil clears it). The log gets counts only, never chat ids, titles or paths.
+    static func syncChatsBeforeLaunch(target: Profile, among: [Profile], openFolders: () -> [URL], transfer: ChatTransfer, state: ChatSyncState? = nil,
+                                      lastUsed: (Profile) -> Date?,
+                                      relation: (URL, URL) throws -> TranscriptRelation = TranscriptDiff.compareContinuation,
+                                      trash: (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) },
+                                      note: (String, String?) -> Void, log: (String) -> Void, logError: (String) -> Void) {
+        if openFolders().contains(where: { ProfileStore.sameItem($0, target.path) }) { return }
+        // Any account used after the target, shared chats or not: a deletion there can leave none in common.
+        guard let source = PinSync.source(for: target, among: among, lastUsed: lastUsed) else {
+            note(target.id, nil)   // nothing to sync from: an earlier note no longer applies
+            return
+        }
+        let plan = ChatSync.plan(target: target, source: source, transfer: transfer, baseline: state?.baseline ?? [:], relation: relation)
+        note(target.id, ChatSync.note(plan, source: source, target: target))
+        guard !plan.isEmpty else { state?.record(plan, unsettled: []); state?.save(); return }
+        do {
+            let r = try ChatSync.apply(plan, to: target, openFolders: openFolders(), trash: trash)
+            state?.record(plan, unsettled: r.unsettled)
+            state?.save()
+            if r.changed > 0 {
+                log("Chats synced from '\(source.name)' to '\(target.name)' (\(r.histories) history, \(r.archived) archived, \(r.unarchived) unarchived, \(r.renamed) renamed, \(r.deleted) deleted)")
+            }
+            if r.failed > 0 { logError("Chat sync for '\(target.name)': \(r.failed) record(s) not written") }
+        } catch {
+            logError("Chat sync for '\(target.name)' failed: \((error as? SwitcherError)?.logText ?? Switcher.describe(error))")
+        }
+    }
+
     /// Before an account opens: its pins for chats it shares follow the account used last.
     /// A failure is logged (no chat ids or titles) and the launch goes on, except a failed restore, which is returned.
     /// Runs on the launch's background queue; the caller holds the starting claim.
@@ -266,7 +324,7 @@ public final class Switcher {
             log("Pins synced from '\(source.name)' to '\(target.name)' (\(pinned) pinned, \(unpinned) unpinned)")
         } catch {
             // Fixed, path-free reasons only: the user-facing messages quote file paths and the log is pasted into bug reports.
-            let reason = (error as? SwitcherError)?.logReason ?? Switcher.describe(error)
+            let reason = (error as? SwitcherError)?.logText ?? Switcher.describe(error)
             if let e = error as? SwitcherError, let note = pinSyncNote(for: e, target: target) { problem(target.id, note) }
             logError("Pin sync for '\(target.name)' failed: \(reason)")
             if let e = error as? SwitcherError, e.logReason == "pin store restore failed" {

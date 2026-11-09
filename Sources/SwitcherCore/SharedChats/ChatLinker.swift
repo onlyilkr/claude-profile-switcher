@@ -108,7 +108,12 @@ public struct ChatLinker {
         let loserRaw: [String: Any]
         let loserRoot: [String: Any]?
         let alreadyLinked: Bool
+        /// The cliSessionId the loser's record had when it was checked (its history file is named after it).
+        let loserCli: String
     }
+
+    private static let stillRunning = L("This chat is still running in Claude. Quit Claude in every account and try again.",
+                                        "Bu sohbet Claude'da hâlâ çalışıyor. Tüm hesaplarda Claude'u kapatıp tekrar deneyin.")
 
     /// `expectedForks`: profileID -> the number of messages of its own that a copy the user picked to
     /// replace had when the chat was checked; such a forked copy is only replaced while it still has them.
@@ -116,16 +121,17 @@ public struct ChatLinker {
         guard let win = chat.copies.first(where: { $0.profileID == winner }) else {
             throw SwitcherError(L("The chat has no copy in that account.", "Sohbetin bu hesapta kopyası yok."))
         }
+        // Each copy's cliSessionId as scanned: a chat Claude resumed under a new one has copies with different ids.
+        func cli(of copy: ChatCopy) -> String { copy.cliSessionID.isEmpty ? chat.cliSessionID : copy.cliSessionID }
+        let winCli = cli(of: win)
+        func running(_ ids: Set<String>) -> Bool { live().contains { ids.contains($0.cliSessionID) } }
         // A live process keeps the history in memory and writes it back: refuse the whole call.
-        if live().contains(where: { $0.cliSessionID == chat.cliSessionID }) {
-            throw SwitcherError(L("This chat is still running in Claude. Quit Claude in every account and try again.",
-                                  "Bu sohbet Claude'da hâlâ çalışıyor. Tüm hesaplarda Claude'u kapatıp tekrar deneyin."))
-        }
+        if running([chat.cliSessionID, winCli]) { throw SwitcherError(ChatLinker.stillRunning) }
         let transfer = ChatTransfer(transcriptsRoot: paths.transcriptsRoot)
         guard let winnerRaw = transfer.readObject(win.record) else {
             throw SwitcherError(L("The chat's record in the winning account can't be read.", "Sohbetin kazanan hesaptaki kaydı okunamadı."))
         }
-        guard (winnerRaw["cliSessionId"] as? String) == chat.cliSessionID else {
+        guard (winnerRaw["cliSessionId"] as? String) == winCli else {
             throw SwitcherError(L("The record in the winning account points at a different history.", "Kazanan hesaptaki kayıt farklı bir geçmişe işaret ediyor."))
         }
         let winnerPath = win.worktreePath
@@ -150,9 +156,13 @@ public struct ChatLinker {
             guard let loserRaw = transfer.readObject(copy.record) else {
                 report.skipped[copy.profileID] = L("The chat's record can't be read.", "Sohbet kaydı okunamadı."); continue
             }
-            guard (loserRaw["cliSessionId"] as? String) == chat.cliSessionID else {
+            let loserCli = cli(of: copy)
+            // Same history, or one continues the other (Claude resumed the chat under a new cliSessionId).
+            guard (loserRaw["cliSessionId"] as? String) == loserCli,
+                  loserCli == winCli || win.continues(copy) || copy.continues(win) else {
                 report.skipped[copy.profileID] = L("The record points at a different history.", "Kayıt farklı bir geçmişe işaret ediyor."); continue
             }
+            if running([loserCli]) { report.skipped[copy.profileID] = ChatLinker.stillRunning; continue }
             var loserRoot: [String: Any]?
             if winnerEntry != nil {
                 let read = WorktreeLeases.read(profile)
@@ -162,11 +172,12 @@ public struct ChatLinker {
             let sameCwd = ChatLinker.norm(copy.cwd) == ChatLinker.norm(win.cwd)
                 || ProfileStore.sameItem(URL(fileURLWithPath: copy.cwd), URL(fileURLWithPath: win.cwd))
             let held = winnerPath == nil || loserRoot.map { WorktreeLeases.holder(of: winnerPath!, in: $0) == chat.id } == true
-            let already = sameCwd && held
+            // Same folder is not enough when the record still names an older history than the winner's.
+            let already = sameCwd && held && loserCli == winCli
             if !already && !win.hasTranscript {
                 report.skipped[copy.profileID] = L("The winning copy has no history file to share.", "Kazanan kopyanın paylaşılacak geçmiş dosyası yok."); continue
             }
-            plans.append(Plan(profile: profile, copy: copy, loserRaw: loserRaw, loserRoot: loserRoot, alreadyLinked: already))
+            plans.append(Plan(profile: profile, copy: copy, loserRaw: loserRaw, loserRoot: loserRoot, alreadyLinked: already, loserCli: loserCli))
         }
 
         let stamp = String(Int(Date().timeIntervalSince1970 * 1000))
@@ -178,15 +189,12 @@ public struct ChatLinker {
             if isOpen(plan.profile) {
                 report.skipped[plan.profile.id] = L("Claude is open in this account. Quit it and try again.", "Bu hesapta Claude açık. Kapatıp tekrar deneyin."); continue
             }
-            if live().contains(where: { $0.cliSessionID == chat.cliSessionID }) {
-                report.skipped[plan.profile.id] = L("This chat is still running in Claude. Quit Claude in every account and try again.",
-                                                    "Bu sohbet Claude'da hâlâ çalışıyor. Tüm hesaplarda Claude'u kapatıp tekrar deneyin."); continue
-            }
+            if running([chat.cliSessionID, winCli, plan.loserCli]) { report.skipped[plan.profile.id] = ChatLinker.stillRunning; continue }
             // The scan may be old: the loser's history must still be behind the winner's (or, for a fork the
             // user picked, still have just the messages the scan showed).
             if !ProfileStore.sameItem(plan.copy.transcript, win.transcript), FileManager.default.fileExists(atPath: plan.copy.transcript.path) {
                 var fine = false
-                switch try? TranscriptDiff.compare(win.transcript, plan.copy.transcript) {
+                switch try? CopyRelation.between(win, plan.copy) {
                 case .some(.identical), .some(.firstAhead): fine = true
                 case .some(.forked(_, let own)): fine = expectedForks[plan.profile.id] == own
                 default: fine = false
@@ -205,10 +213,7 @@ public struct ChatLinker {
             do {
                 // Claimed from the last open check to the end of its write; the live check runs under the claim.
                 try writing(plan.profile) {
-                    if live().contains(where: { $0.cliSessionID == chat.cliSessionID }) {
-                        throw SwitcherError(L("This chat is still running in Claude. Quit Claude in every account and try again.",
-                                              "Bu sohbet Claude'da hâlâ çalışıyor. Tüm hesaplarda Claude'u kapatıp tekrar deneyin."))
-                    }
+                    if running([chat.cliSessionID, winCli, plan.loserCli]) { throw SwitcherError(ChatLinker.stillRunning) }
                     try backUpWorktreeList(of: plan.profile, stamp: stamp)
                     try apply(plan, chat: chat, win: win, winnerRaw: winnerRaw, winnerEntry: winnerEntry)
                 }
@@ -232,7 +237,10 @@ public struct ChatLinker {
                                                      "Eski geçmiş dosyası yerinde bırakıldı: başka bir hesabın kopyası hâlâ onu kullanıyor.")
                 continue
             }
-            do { try writing(plan.profile) { try moveToBackup(plan.copy, cli: chat.cliSessionID, profileID: plan.profile.id, stamp: stamp) } } catch {
+            // A history the chat now continues (named in a record's priorCliSessionIds) holds the start of the chat,
+            // which the newer file may repeat only in part: it stays where Claude can read it.
+            if chat.copies.contains(where: { $0.priorCliSessionIDs.contains(plan.loserCli) }) { continue }
+            do { try writing(plan.profile) { try moveToBackup(plan.copy, cli: plan.loserCli, profileID: plan.profile.id, stamp: stamp) } } catch {
                 report.warnings[plan.profile.id] = L("Linked, but its old history file could not be moved: \(error.localizedDescription)",
                                                      "Bağlandı, ama eski geçmiş dosyası taşınamadı: \(error.localizedDescription)")
             }

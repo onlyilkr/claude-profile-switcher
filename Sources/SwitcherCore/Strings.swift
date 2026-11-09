@@ -14,8 +14,12 @@ public struct SwitcherError: LocalizedError, Equatable {
     public let logReason: String?
     /// Where something the user may need is (a backup folder). Never logged.
     public let detail: String?
-    public init(_ message: String, logReason: String? = nil, detail: String? = nil) {
-        self.message = message; self.logReason = logReason; self.detail = detail
+    /// What led to it, as fixed text without paths, names or ids (the step that failed and its own reason). Logged after logReason.
+    public let cause: String?
+    public init(_ message: String, logReason: String? = nil, detail: String? = nil, cause: String? = nil) {
+        self.message = message; self.logReason = logReason; self.detail = detail; self.cause = cause
     }
+    /// logReason, followed by the cause in parentheses when there is one.
+    public var logText: String? { logReason.map { reason in cause.map { "\(reason) (\($0))" } ?? reason } }
     public var errorDescription: String? { message }
 }
