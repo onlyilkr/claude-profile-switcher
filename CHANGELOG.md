@@ -4,7 +4,10 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.2.0] - 2026-11-10
+
+Shared chats now stay the same across accounts as you switch, and a chat Claude resumed under a new
+history file is read the right way round.
 
 ### Added
 
@@ -33,6 +36,10 @@ All notable changes to this project are documented here. The format follows
 - Sync can now bring a copy like that to its continuation: it skipped it before with "The record points at a
   different history". The old history file and its side folder go to the backups as usual, and Sync refuses
   while either history is still running in Claude or when the old copy changed since it was checked.
+- Sync reported a copy in the same folder as linked, and wrote nothing, when its record still named the
+  history the winner's continues.
+- Comparing a chat's histories no longer reads the whole older file: it reads it from its end back to the last
+  shared message, so the Shared chats scan takes a fraction of the time and memory on long chats.
 
 ## [1.1.1] - 2026-11-01
 
@@ -182,6 +189,7 @@ First public release: a macOS port of
   `--route-sign-ins`, `--revert`, `--open-link`, `--open-links-in`, `--claude-path`.
 - English and Turkish, following the system language.
 
+[1.2.0]: https://github.com/onlyilkr/claude-profile-switcher/releases/tag/v1.2.0
 [1.1.1]: https://github.com/onlyilkr/claude-profile-switcher/releases/tag/v1.1.1
 [1.1.0]: https://github.com/onlyilkr/claude-profile-switcher/releases/tag/v1.1.0
 [1.0.0]: https://github.com/onlyilkr/claude-profile-switcher/releases/tag/v1.0.0
