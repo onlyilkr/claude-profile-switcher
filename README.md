@@ -292,7 +292,9 @@ chat's worktree before moving it: uncommitted files are not carried to the new o
 
 If the target account already has the chat, the summary says so, and when that copy is behind it
 says how far ("already in 'Work', but 635 messages behind - don't continue it there") instead of just
-"already there". With linking off, it also asks you to confirm before you copy a worktree chat.
+"already there". When that copy only lags behind a newer history Claude started on resume, chat sync
+points it at the newer one the next time the switcher opens that account (see
+[Keeping shared chats the same](#keeping-shared-chats-the-same)). With linking off, it also asks you to confirm before you copy a worktree chat.
 
 With linking on, the transfer links a worktree chat instead: chats copied now are linked, and so are
 chats that were already there with the same history (the summary notes that they would have split).
@@ -301,8 +303,10 @@ another link operation is running, the transfer still copies and reports the cha
 
 ## Shared chats
 
-Once a chat exists in two accounts, the two copies can drift apart. The switcher finds those chats,
-shows how each copy compares, and, if you turn it on, can keep worktree chats on one history.
+Once a chat exists in two accounts, the two copies can drift apart. As you switch, the switcher keeps
+them the same where it safely can (the latest history, archived state, title, deletions and pins). It
+also finds the chats that still differ, shows how each copy compares, and, if you turn it on, can keep
+worktree chats on one history.
 
 ### What you see
 
@@ -350,6 +354,12 @@ on and off (**Sync chats and pins across accounts**, on by default). For each sh
   unless it was used here after it was deleted there: then it is kept, and the panel says so.
 - **History files are never changed or moved**: they live in `~/.claude/projects`, shared by every
   account. Chats only one account has are not copied (use the transfer for that).
+
+It happens only when the switcher opens an account (the panel, a launcher, or `--launch`); opening
+Claude.app directly skips it. It runs whether or not linking is on and never blocks opening the account.
+What it leaves to you is a line under the **Sync chats and pins across accounts** switch, with counts
+only: chats whose histories went separate ways (open the Shared chats window to see them, and with linking
+on, **Sync** keeps the copy you pick), and chats kept here although they were deleted in the other account.
 
 It writes only while the account is closed. Every record it changes is backed up next to it first (the
 newest 5 per record are kept), and a record that changed since the switcher read it is left for the next
@@ -500,7 +510,7 @@ alias claude-profiles="/Applications/Claude\ Profile\ Switcher.app/Contents/MacO
 | Command | Does |
 | --- | --- |
 | `claude-profiles --list` | Profiles, which are open (with pid), and their folders |
-| `claude-profiles --launch Work` | Open a profile, or bring it forward if it is open |
+| `claude-profiles --launch Work` | Open a profile (after chat and pin sync, when on), or bring it forward if it is open |
 | `claude-profiles --add-account` | Add an account and open Claude at its sign-in screen |
 | `claude-profiles --shortcut Work` | Make the `Claude - Work.app` launcher |
 | `claude-profiles --status` | Sign-in routing state, who opens `claude://` now, and which open accounts are signed in |
@@ -581,9 +591,12 @@ renaming changes only the label.
 - **Deleting moves to the Trash**, only for folders named `ClaudeProfile-<id>` directly under Application
   Support, and never while that account's Claude is open.
 - **Chat transfer is additive** and never runs while the target is open; see above.
+- **Chat sync deletes only what Claude deleted.** A chat's record is removed only when Claude deleted
+  that chat in the account used last and it was not used here since; the record goes to the Trash. History
+  files are never deleted, moved or edited by it.
 - **No tokens or cookies are used.** Signed-in state comes from `config.json`: the signed-in flag, the id
   of the account last signed in, and the length of the token cache, which is never stored, logged or
-  sent. Chat records are read to list and copy them. Transcripts are read only to compare the copies of a shared chat (counting messages); their text is never stored, logged or sent.
+  sent. Chat records are read to list and copy them. Transcripts are read only to compare the copies of a shared chat (message ids and times); their text is never stored, logged or sent.
 - **Links are validated**: only `claude://` followed by ordinary URL characters, up to 2048 of them.
   The switcher's own `claudeprofileswitcher://` links can only open an existing profile.
 - **No network access**, no analytics, no updater. The only thing that leaves your Mac is what Claude
@@ -608,6 +621,9 @@ See [SECURITY.md](SECURITY.md) for the full list of what the app touches and how
 - Only the desktop app changes account. The `claude` command line in Terminal keeps its own login; give
   it per-account settings with the `CLAUDE_CONFIG_DIR` environment variable.
 - Linked worktree chats are experimental and must not be open in two accounts at once; see [Shared chats](#shared-chats).
+- Chat sync follows only what changed between switches made through the switcher, and only for chats both
+  accounts have. A chat continued in both accounts in the meantime has two histories, and which one to keep
+  is up to you.
 - Everything here relies on undocumented Claude behaviour that an update can change. Features stop
   rather than damage data when something looks unfamiliar.
 
@@ -683,11 +699,16 @@ Install Claude from [claude.ai/download](https://claude.ai/download), or point t
 <details>
 <summary><b>A chat is behind in the other account</b></summary>
 
-The two accounts have separate copies of the chat's history, usually because Claude moved it to a new
-worktree when it was continued in the second account. Do not continue from the older copy. Open
-**Show** in the panel note (or run `claude-profiles --shared-chats`) to see which copy is newest, and
-open the chat there. To make both accounts use the newest copy, turn on the experimental linking and
-press **Sync**; read [Shared chats](#shared-chats) first.
+The two accounts have separate copies of the chat's history. Do not continue from the older copy.
+
+- **Claude resumed it under a new history file in the other account** (the usual case in one folder): with
+  **Sync chats and pins across accounts** on, the copy is brought up to date the next time you open this
+  account from the switcher. Quit it and open it again from the panel. If it is still behind, it also got
+  messages of its own after the other account moved on: it has forked.
+- **Claude moved it to a new worktree** when it was continued in the second account, or it **forked**:
+  open **Show** in the panel note (or run `claude-profiles --shared-chats`) to see which copy is newest,
+  and open the chat there. To make both accounts use one copy, turn on the experimental linking and
+  press **Sync**; read [Shared chats](#shared-chats) first.
 </details>
 
 ## Uninstall
