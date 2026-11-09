@@ -101,22 +101,22 @@ final class TranscriptDiffTests: XCTestCase {
         "{\"type\":\"user\",\"uuid\":\"\(id)\",\"sessionId\":\"\(session)\",\"timestamp\":\"\(ts)\"}"
     }
 
-    /// The real case: the new file inherits only part of the old history (with its own sessionId on every
+    /// The usual resume: the new file inherits only part of the old history (with its own sessionId on every
     /// line), the old file still has an interrupted turn written just before the resume, and the new file
     /// then grows on its own.
     func testContinuationMakesTheOlderFileBehindWhenItsTailPredatesTheResume() throws {
         let old = try write("old.jsonl", [
-            line("u1", session: "old", at: "2026-11-01T10:00:00.000Z"),
-            line("u2", session: "old", at: "2026-11-05T15:39:30.000Z"),
-            "{\"type\":\"system\",\"uuid\":\"stop\",\"timestamp\":\"2026-11-05T15:39:33.000Z\"}",
-            line("typed", session: "old", at: "2026-11-08T12:01:35.000Z"),
-            line("interrupted", session: "old", at: "2026-11-08T12:01:39.000Z"),
+            line("u1", session: "old", at: "2025-01-01T10:00:00.000Z"),
+            line("u2", session: "old", at: "2025-01-02T10:00:00.000Z"),
+            "{\"type\":\"system\",\"uuid\":\"stop\",\"timestamp\":\"2025-01-02T10:00:05.000Z\"}",
+            line("typed", session: "old", at: "2025-01-03T09:00:00.000Z"),
+            line("interrupted", session: "old", at: "2025-01-03T09:00:10.000Z"),
         ])
         let new = try write("new.jsonl", [
-            "{\"type\":\"history-suppression\",\"sessionId\":\"new\",\"cause\":\"fork_inherit\",\"ts\":\"2026-11-08T12:01:47.080Z\"}",
-            line("u2", session: "new", at: "2026-11-05T15:39:30.000Z"),
-            line("n1", session: "new", at: "2026-11-08T12:02:56.000Z"),
-            line("n2", session: "new", at: "2026-11-08T22:30:31.000Z"),
+            "{\"type\":\"history-suppression\",\"sessionId\":\"new\",\"cause\":\"fork_inherit\",\"ts\":\"2025-01-03T09:00:20.000Z\"}",
+            line("u2", session: "new", at: "2025-01-02T10:00:00.000Z"),
+            line("n1", session: "new", at: "2025-01-03T09:01:00.000Z"),
+            line("n2", session: "new", at: "2025-01-03T18:00:00.000Z"),
         ])
         // A raw line compare sees two unrelated files.
         XCTAssertEqual(try TranscriptDiff.compare(old, new), .forked(first: 5, second: 3))
@@ -125,20 +125,20 @@ final class TranscriptDiffTests: XCTestCase {
 
     func testContinuationIsForkedWhenTheOlderFileGrewAfterTheResume() throws {
         let old = try write("old.jsonl", [
-            line("u1", session: "old", at: "2026-11-01T10:00:00.000Z"),
-            line("later", session: "old", at: "2026-11-09T09:00:00.000Z"),
+            line("u1", session: "old", at: "2025-01-01T10:00:00.000Z"),
+            line("later", session: "old", at: "2025-01-04T09:00:00.000Z"),
         ])
         let new = try write("new.jsonl", [
-            line("u1", session: "new", at: "2026-11-01T10:00:00.000Z"),
-            line("n1", session: "new", at: "2026-11-08T12:02:56.000Z"),
-            line("n2", session: "new", at: "2026-11-08T12:03:00.000Z"),
+            line("u1", session: "new", at: "2025-01-01T10:00:00.000Z"),
+            line("n1", session: "new", at: "2025-01-03T09:01:00.000Z"),
+            line("n2", session: "new", at: "2025-01-03T09:02:00.000Z"),
         ])
         XCTAssertEqual(try TranscriptDiff.compareContinuation(older: old, newer: new), .forked(first: 1, second: 2))
     }
 
     func testContinuationWithNothingNewIsIdentical() throws {
-        let old = try write("old.jsonl", [line("u1", session: "old", at: "2026-11-01T10:00:00.000Z")])
-        let new = try write("new.jsonl", [line("u1", session: "new", at: "2026-11-01T10:00:00.000Z")])
+        let old = try write("old.jsonl", [line("u1", session: "old", at: "2025-01-01T10:00:00.000Z")])
+        let new = try write("new.jsonl", [line("u1", session: "new", at: "2025-01-01T10:00:00.000Z")])
         XCTAssertEqual(try TranscriptDiff.compareContinuation(older: old, newer: new), .identical)
     }
 
@@ -527,12 +527,12 @@ final class SharedChatScannerTests: XCTestCase {
         func l(_ id: String, _ s: String, _ ts: String) -> String {
             "{\"type\":\"user\",\"uuid\":\"\(id)\",\"sessionId\":\"\(s)\",\"timestamp\":\"\(ts)\",\"pad\":\"" + String(repeating: "x", count: 300) + "\"}"
         }
-        try transcript(cwd: "/work/app", cli: "old", lines: (1...20).map { l("u\($0)", "old", "2026-11-01T10:00:\(String(format: "%02d", $0)).000Z") }
-                       + [l("interrupted", "old", "2026-11-08T12:01:39.000Z")])
+        try transcript(cwd: "/work/app", cli: "old", lines: (1...20).map { l("u\($0)", "old", "2025-01-01T10:00:\(String(format: "%02d", $0)).000Z") }
+                       + [l("interrupted", "old", "2025-01-03T09:00:10.000Z")])
         try transcript(cwd: "/work/app", cli: "new", lines: ["{\"type\":\"history-suppression\",\"sessionId\":\"new\",\"cause\":\"fork_inherit\"}",
-                                                            l("u20", "new", "2026-11-01T10:00:20.000Z"),
-                                                            l("n1", "new", "2026-11-08T12:02:56.000Z"),
-                                                            l("n2", "new", "2026-11-08T22:30:31.000Z")])
+                                                            l("u20", "new", "2025-01-01T10:00:20.000Z"),
+                                                            l("n1", "new", "2025-01-03T09:01:00.000Z"),
+                                                            l("n2", "new", "2025-01-03T18:00:00.000Z")])
         let chat = try XCTUnwrap(scanner().scan([profileA, profileB]).first)
         XCTAssertEqual(chat.status["B"], .latest)
         XCTAssertEqual(chat.status["A"], .behind(messages: 2))

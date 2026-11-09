@@ -172,7 +172,8 @@ public struct ChatLinker {
             let sameCwd = ChatLinker.norm(copy.cwd) == ChatLinker.norm(win.cwd)
                 || ProfileStore.sameItem(URL(fileURLWithPath: copy.cwd), URL(fileURLWithPath: win.cwd))
             let held = winnerPath == nil || loserRoot.map { WorktreeLeases.holder(of: winnerPath!, in: $0) == chat.id } == true
-            let already = sameCwd && held
+            // Same folder is not enough when the record still names an older history than the winner's.
+            let already = sameCwd && held && loserCli == winCli
             if !already && !win.hasTranscript {
                 report.skipped[copy.profileID] = L("The winning copy has no history file to share.", "Kazanan kopyanın paylaşılacak geçmiş dosyası yok."); continue
             }
