@@ -14,6 +14,7 @@ struct PanelView: View {
             } else {
                 header
                 if let error = state.errorMessage { ErrorBanner(text: error) { state.errorMessage = nil } }
+                if let version = state.updateAvailable { UpdateNotice(version: version, actions: state.actions) }
                 if state.showRoutingBanner { RoutingBanner(actions: state.actions) }
                 if state.usagePaused && !state.usageNoticeDismissed {
                     UsagePausedNotice(openCount: state.openCount) { state.usageNoticeDismissed = true }
@@ -451,6 +452,10 @@ struct SettingsSection: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            ToggleRow(title: L("Check for updates", "Güncellemeleri denetle"),
+                      detail: L("Once a day, asks GitHub for the latest release of the switcher. Nothing about your accounts or chats is sent.",
+                                "Günde bir kez, switcher'ın en son sürümünü GitHub'a sorar. Hesaplarınız veya sohbetleriniz hakkında hiçbir şey gönderilmez."),
+                      isOn: Binding(get: { state.checkUpdates }, set: { state.actions.setCheckUpdates($0) }))
             ToggleRow(title: L("Open at login", "Oturum açılışında başlat"), detail: nil,
                       isOn: Binding(get: { state.loginItem }, set: { state.actions.setLogin($0) }))
         }
@@ -552,6 +557,32 @@ struct UsagePausedNotice: View {
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.06)))
+        .padding(.horizontal, 10)
+        .padding(.bottom, 6)
+    }
+}
+
+/// A newer release is out. **Update** upgrades a Homebrew install in Terminal, or opens the release page; the
+/// cross hides the note until the next release.
+struct UpdateNotice: View {
+    let version: String
+    let actions: PanelActions
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "arrow.down.circle.fill").foregroundStyle(Color.accentColor)
+            Text(L("Claude Profile Switcher \(version) is available", "Claude Profile Switcher \(version) çıktı"))
+                .font(.system(size: 12, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button(L("Update", "Güncelle"), action: actions.update).controlSize(.small)
+            Button(action: actions.dismissUpdate) { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(L("Dismiss", "Kapat"))
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.accentColor.opacity(0.1)))
         .padding(.horizontal, 10)
         .padding(.bottom, 6)
     }

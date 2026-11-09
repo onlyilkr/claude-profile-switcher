@@ -85,6 +85,10 @@ struct PanelActions {
     var setLinkChats: (Bool) -> Void = { _ in }
     var linkAll: () -> Void = {}
     var setSyncPins: (Bool) -> Void = { _ in }
+    var setCheckUpdates: (Bool) -> Void = { _ in }
+    /// Runs `brew upgrade` in Terminal for a Homebrew install, otherwise opens the release page.
+    var update: () -> Void = {}
+    var dismissUpdate: () -> Void = {}
     var quit: () -> Void = {}
     var downloadClaude: () -> Void = {}
 }
@@ -102,6 +106,9 @@ final class PanelState: ObservableObject {
     @Published var loginItem = false
     @Published var linkChats = false
     @Published var syncPins = true
+    @Published var checkUpdates = true
+    /// A newer release to tell the user about ("1.3.0"), nil when there is none or its note was closed.
+    @Published var updateAvailable: String?
     /// Why pin sync is refused for a lasting reason, shown under its toggle; nil when there is none.
     /// One note per account (the account's id is the stable identity of a row).
     @Published var pinSyncProblems: [PinSyncNote] = []

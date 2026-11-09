@@ -87,6 +87,9 @@ public final class Settings {
     /// Pins of shared chats follow the account used last when an account opens. Absent means on.
     public var syncPins: Bool { self["SyncPins"] as? Bool != false }
 
+    /// Once a day, ask GitHub for the latest release and say when one is newer. Absent means on.
+    public var checkForUpdates: Bool { self["CheckForUpdates"] as? Bool != false }
+
     /// Extra environment for one account's Claude, from "ProfileEnv": { "<id>": { "NAME": "value" } }.
     /// Names must be letters, digits and _, not starting with a digit; others are skipped.
     public func profileEnv(_ id: String) -> [String: String] {

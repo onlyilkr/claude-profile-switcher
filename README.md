@@ -25,7 +25,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/panel-dark.png">
-    <img src="docs/images/panel-light.png" width="360" alt="The panel under the menu bar icon: five accounts with coloured badges. Default and Work have a green ring (open), Client an orange one (open, waiting for sign-in), Account 5 a spinning ring (opening), Personal none (closed). Default shows 38% and Personal 100% of the 5-hour limit. Below: Add account, the sign-in routing switch with a picker for other links, the experimental switch to keep worktree chats linked across accounts, Sync chats and pins across accounts, and Open at login.">
+    <img src="docs/images/panel-light.png" width="360" alt="The panel under the menu bar icon: five accounts with coloured badges. Default and Work have a green ring (open), Client an orange one (open, waiting for sign-in), Account 5 a spinning ring (opening), Personal none (closed). Default shows 38% and Personal 100% of the 5-hour limit. Below: Add account, the sign-in routing switch with a picker for other links, the experimental switch to keep worktree chats linked across accounts, Sync chats and pins across accounts, Check for updates, and Open at login.">
   </picture>
 </p>
 
@@ -108,7 +108,7 @@ Three things about Claude on macOS shape the design (as observed with Claude Des
 | **Launchers** | `Claude - Work.app` in `~/Applications` with a coloured badge, for Spotlight, Launchpad and the Dock. |
 | **Per-account environment** | Environment variables and launch flags for one account's Claude, for example for an MCP server. |
 | **Your original stays put** | The account you already have keeps its folder, auto update and settings. The switcher writes there only while that account is closed and after a backup: when you transfer chats into it, when chat and pin sync bring the shared chats over as it opens it (their records and Claude's own pin list, see [Keeping shared chats the same](#keeping-shared-chats-the-same) and [Pins](#pins)), or, with linking on, when a chat is linked. |
-| **Native and small** | Swift and AppKit, one universal binary, no dependencies, no network access, English and Turkish. |
+| **Native and small** | Swift and AppKit, one universal binary, no dependencies, English and Turkish. Its only network request is a once-a-day update check you can turn off. |
 
 ## Install
 
@@ -136,6 +136,15 @@ xattr -dr com.apple.quarantine "/Applications/Claude Profile Switcher.app"
 ```
 
 The second line tells Gatekeeper you trust this download; do it only for a zip whose checksum matched.
+
+### Updating
+
+Once a day the switcher asks GitHub for its latest release, and when one is newer the panel says so
+(**Claude Profile Switcher 1.x.y is available**). **Update** runs `brew upgrade --cask claude-profile-switcher`
+in Terminal for a Homebrew install, which quits the app, upgrades it and opens it again; for any other
+install it opens the release page. The cross hides the note until the next release. The switcher never
+downloads or replaces itself. Turn the check off with **Check for updates** in the panel (`CheckForUpdates`
+in `settings.json`); with it off, the switcher makes no network requests at all.
 
 ### Build from source
 
@@ -179,6 +188,8 @@ make install    # builds, copies to ~/Applications, opens it
 | Send sign-ins to the right account | Sign-in routing on or off. Hidden until there is a second account. |
 | Open other claude:// links in | Where links that are not sign-ins go while routing is on. |
 | Sync chats and pins across accounts | Chat and pin sync on or off (on by default). Hidden until there is a second account. See [Keeping shared chats the same](#keeping-shared-chats-the-same) and [Pins](#pins). |
+| Check for updates | The once-a-day update check on or off (on by default). See [Updating](#updating). |
+| *Claude Profile Switcher 1.x.y is available* | Shown when a newer release is out: **Update**, or the cross to hide it until the next one. |
 
 Renaming and deleting happen in the row itself: type the new name and press Return, or confirm the move
 to the Trash. An account whose Claude is open cannot be deleted.
@@ -561,6 +572,7 @@ writes most of them; two are for hand editing:
 | `ClaudePath` | Set by `--claude-path`. |
 | `SyncPins` | `false` turns off chat and pin sync when the switcher opens an account (it does not affect the pins a chat transfer carries); absent or `true` means on. Set from the panel. |
 | `LinkWorktreeChats` | `true` when worktree chat linking is on; absent means off. Set from the panel. |
+| `CheckForUpdates` | `false` turns off the update check, and with it every network request the switcher makes; absent or `true` means on. Set from the panel. |
 
 If `settings.json` stops being valid JSON after a hand edit, the switcher stops saving anything and
 says so in the panel, instead of replacing the file and losing your other settings.
@@ -584,6 +596,7 @@ Claude is closed.
 | Who is starting or writing which account, and accounts whose pin restore failed | `~/Library/Application Support/Claude Profile Switcher/claims.json` and `restore-failed.json` |
 | Backups taken before pins are written | `~/Library/Application Support/Claude Profile Switcher/backups/pinstore/<time>/<account>/`, the newest 5 per account |
 | What each account had for its shared chats at its last sync, and how their history files compare | `~/Library/Application Support/Claude Profile Switcher/chat-sync-state.json` (account and chat ids, title hashes) and `chat-sync-cache.json` (history file paths, sizes and dates) |
+| What the update check last found, and the script **Update** opens for a Homebrew install | `~/Library/Application Support/Claude Profile Switcher/update-check.json` (version numbers and a date) and `Update Claude Profile Switcher.command` |
 | Backups of chat records the chat sync changes | Next to each record, `local_<id>.json.switcher-backup-<time>`, the newest 5 per record |
 
 A profile's folder name is its permanent id: Claude stores absolute paths inside its data, so
@@ -607,7 +620,13 @@ renaming changes only the label.
   sent. Chat records are read to list and copy them. Transcripts are read only to compare the copies of a shared chat (message ids and times); their text is never stored, logged or sent.
 - **Links are validated**: only `claude://` followed by ordinary URL characters, up to 2048 of them.
   The switcher's own `claudeprofileswitcher://` links can only open an existing profile.
-- **No network access**, no analytics, no updater. The only thing that leaves your Mac is what Claude
+- **One network request, and only while Check for updates is on**: at most once a day (a failed one is
+  tried again an hour later), a GET of `https://api.github.com/repos/onlyilkr/claude-profile-switcher/releases/latest`,
+  without cookies or credentials. It carries what any HTTPS request does (your IP address) and a
+  User-Agent naming the switcher's version; nothing about your accounts, profiles, chats or usage. Only the
+  release's version number is read from the answer, and the release page or `brew upgrade` the switcher
+  opens is built from that number, never from a link in the answer. There are no analytics and the
+  switcher never downloads or installs anything itself. Everything else that leaves your Mac is what Claude
   itself sends.
 
 See [SECURITY.md](SECURITY.md) for the full list of what the app touches and how to report a problem.

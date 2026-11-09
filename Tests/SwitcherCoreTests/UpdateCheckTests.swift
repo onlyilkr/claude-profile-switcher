@@ -169,4 +169,23 @@ final class UpdateCheckTests: XCTestCase {
         let odd = UpdateCheck.upgradeScript(brew: URL(fileURLWithPath: "/a'b/bin/brew"))
         XCTAssertTrue(odd.contains("'/a'\\''b/bin/brew'"), odd)
     }
+
+    // MARK: setting and paths
+
+    func testCheckForUpdatesDefaultsOn() throws {
+        let settings = Settings(file: home.appendingPathComponent("settings.json"))
+        XCTAssertTrue(settings.checkForUpdates)
+        try settings.set("CheckForUpdates", false)
+        XCTAssertFalse(settings.checkForUpdates)
+        try settings.set("CheckForUpdates", true)
+        XCTAssertTrue(settings.checkForUpdates)
+    }
+
+    func testTheStateAndScriptLiveInTheSwitchersFolder() {
+        let paths = Paths(home: home)
+        XCTAssertEqual(paths.updateState.deletingLastPathComponent(), paths.switcherHome)
+        XCTAssertEqual(paths.updateState.lastPathComponent, "update-check.json")
+        XCTAssertEqual(paths.upgradeScript.deletingLastPathComponent(), paths.switcherHome)
+        XCTAssertEqual(paths.upgradeScript.pathExtension, "command")
+    }
 }

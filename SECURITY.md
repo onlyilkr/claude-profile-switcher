@@ -30,9 +30,10 @@ Knowing this helps judge whether something is in scope:
 | `~/Library/Application Support/Claude Profile Switcher/links.json` | Link ledger | The switcher's own list of what it wrote, so Unlink removes exactly that |
 | `~/Applications/Claude - <name>.app` | Launchers | Created and removed only if they carry the switcher's marker |
 | Launch Services | `claude://` handler | Changed only while sign-in routing is on; given back when it is turned off |
-| `~/Library/Application Support/Claude Profile Switcher` | Settings, logs | The switcher's own files, including `chat-sync-state.json` (account and chat ids, title hashes) and `chat-sync-cache.json` (history file paths, sizes and dates) |
+| `https://api.github.com/repos/onlyilkr/claude-profile-switcher/releases/latest` | Update check | Only while **Check for updates** is on (the default): at most once a day, a GET without cookies or credentials, with a User-Agent naming the switcher's version. Only `tag_name` of a published, non-prerelease release is read, and only as `vMAJOR.MINOR.PATCH`; the release page or `brew upgrade` it offers is built from that version, never from the response. Nothing is downloaded or installed by the switcher |
+| `~/Library/Application Support/Claude Profile Switcher` | Settings, logs | The switcher's own files, including `update-check.json` (version numbers and a date), the Terminal script **Update** writes for a Homebrew install (it runs only the fixed `brew upgrade --cask claude-profile-switcher` and reopens the app), `chat-sync-state.json` (account and chat ids, title hashes) and `chat-sync-cache.json` (history file paths, sizes and dates) |
 
-The app makes no network requests.
+The update check above is the app's only network request; with **Check for updates** off it makes none.
 
 ## Scope
 
@@ -50,6 +51,8 @@ In scope:
 - Leaking secrets: a sign-in link, token, cookie or chat content written to a log, the panel, the
   command line output or the network.
 - Supply-chain issues in the release pipeline (unpinned actions, tampered checksums or cask).
+- An update check that sends more than described above, or a release response that makes the switcher
+  open, run or download anything other than its own release page or the fixed `brew upgrade` command.
 
 Out of scope: bugs that need an attacker who already controls your user account, and changes in Claude
 Desktop's undocumented behaviour that make a feature stop working without damaging anything (file a
