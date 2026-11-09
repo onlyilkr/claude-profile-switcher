@@ -66,7 +66,6 @@ public enum UpdateCheck {
     public static let repository = "onlyilkr/claude-profile-switcher"
     public static let latestURL = URL(string: "https://api.github.com/repos/\(repository)/releases/latest")!
     public static let cask = "claude-profile-switcher"
-    public static let bundleID = "io.github.onlyilkr.ClaudeProfileSwitcher"
     static let interval: TimeInterval = 86_400
 
     /// The version a published, non-prerelease release response names; nil for anything else.
@@ -151,13 +150,18 @@ public enum UpdateCheck {
         return nil
     }
 
-    /// A Terminal script that upgrades the cask (Homebrew quits the app first) and opens it again.
-    public static func upgradeScript(brew: URL) -> String {
-        let quoted = "'" + brew.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    /// A Terminal script that refreshes Homebrew's taps (`upgrade` alone may not, and then finds nothing to do),
+    /// upgrades the cask (Homebrew quits the app first) and reopens `app`, the copy that was running.
+    public static func upgradeScript(brew: URL, app: URL) -> String {
+        func quoted(_ url: URL) -> String { "'" + url.path.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let b = quoted(brew)
         return """
         #!/bin/sh
         echo "Updating Claude Profile Switcher with Homebrew..."
-        \(quoted) upgrade --cask \(cask) && open -b \(bundleID)
+        \(b) update && \(b) upgrade --cask \(cask)
+        status=$?
+        open \(quoted(app))
+        exit $status
         """ + "\n"
     }
 }

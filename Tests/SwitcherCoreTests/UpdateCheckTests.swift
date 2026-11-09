@@ -160,14 +160,21 @@ final class UpdateCheckTests: XCTestCase {
         XCTAssertEqual(UpdateCheck.brew(prefixes: [prefix])?.path, brew.path)
     }
 
-    func testTheUpgradeScriptRunsOnlyTheFixedCommand() {
-        let script = UpdateCheck.upgradeScript(brew: URL(fileURLWithPath: "/opt/homebrew/bin/brew"))
+    /// Homebrew does not always refresh its taps before `upgrade`, and then reports nothing to do: the script
+    /// refreshes them first. It reopens the copy that was running (by path), not whichever copy macOS picks.
+    func testTheUpgradeScriptRefreshesTheTapUpgradesAndReopensThisCopy() {
+        let script = UpdateCheck.upgradeScript(brew: URL(fileURLWithPath: "/opt/homebrew/bin/brew"),
+                                               app: URL(fileURLWithPath: "/Applications/Claude Profile Switcher.app"))
         XCTAssertTrue(script.hasPrefix("#!/bin/sh\n"))
-        XCTAssertTrue(script.contains("'/opt/homebrew/bin/brew' upgrade --cask claude-profile-switcher"))
-        XCTAssertTrue(script.contains("open -b io.github.onlyilkr.ClaudeProfileSwitcher"))
-        // A path with a quote cannot break out of the command.
-        let odd = UpdateCheck.upgradeScript(brew: URL(fileURLWithPath: "/a'b/bin/brew"))
-        XCTAssertTrue(odd.contains("'/a'\\''b/bin/brew'"), odd)
+        XCTAssertTrue(script.contains("'/opt/homebrew/bin/brew' update && '/opt/homebrew/bin/brew' upgrade --cask claude-profile-switcher"), script)
+        XCTAssertTrue(script.contains("open '/Applications/Claude Profile Switcher.app'"), script)
+        XCTAssertFalse(script.contains("open -b"), script)
+    }
+
+    func testTheUpgradeScriptQuotesPaths() {
+        let odd = UpdateCheck.upgradeScript(brew: URL(fileURLWithPath: "/a'b/bin/brew"), app: URL(fileURLWithPath: "/x'y/App.app"))
+        XCTAssertTrue(odd.contains("'/a'\\''b/bin/brew' update"), odd)
+        XCTAssertTrue(odd.contains("open '/x'\\''y/App.app'"), odd)
     }
 
     // MARK: setting and paths

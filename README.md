@@ -140,7 +140,7 @@ The second line tells Gatekeeper you trust this download; do it only for a zip w
 ### Updating
 
 Once a day the switcher asks GitHub for its latest release, and when one is newer the panel says so
-(**Claude Profile Switcher 1.x.y is available**). **Update** runs `brew upgrade --cask claude-profile-switcher`
+(**Claude Profile Switcher 1.x.y is available**). **Update** runs `brew update` and `brew upgrade --cask claude-profile-switcher`
 in Terminal for a Homebrew install, which quits the app, upgrades it and opens it again; for any other
 install it opens the release page. The cross hides the note until the next release. The switcher never
 downloads or replaces itself. Turn the check off with **Check for updates** in the panel (`CheckForUpdates`

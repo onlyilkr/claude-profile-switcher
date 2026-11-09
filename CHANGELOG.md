@@ -10,7 +10,7 @@ All notable changes to this project are documented here. The format follows
 
 - Update check, on by default (**Check for updates** in the panel, `CheckForUpdates` in `settings.json`): once
   a day the switcher asks GitHub for its latest release, and when one is newer the panel says so. **Update**
-  runs `brew upgrade --cask claude-profile-switcher` in Terminal for a Homebrew install, and opens the release
+  runs `brew update` and `brew upgrade --cask claude-profile-switcher` in Terminal for a Homebrew install, and opens the release
   page otherwise; the cross hides the note until the next release. It is the switcher's only network request:
   no cookies or credentials, nothing about accounts or chats, only the version number is read from the
   answer, and the switcher never downloads or replaces itself. Turning it off means no network requests.

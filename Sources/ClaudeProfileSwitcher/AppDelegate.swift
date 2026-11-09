@@ -128,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 try FileManager.default.createDirectory(at: script.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                         attributes: [.posixPermissions: 0o700])
-                try UpdateCheck.upgradeScript(brew: brew).write(to: script, atomically: true, encoding: .utf8)
+                try UpdateCheck.upgradeScript(brew: brew, app: Bundle.main.bundleURL).write(to: script, atomically: true, encoding: .utf8)
                 chmod(script.path, 0o700)
                 if NSWorkspace.shared.open(script) { return }
             } catch {
