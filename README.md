@@ -9,6 +9,10 @@
   No signing out, no second user account, no patched app.
 </p>
 
+```sh
+brew install --cask onlyilkr/tap/claude-profile-switcher
+```
+
 <p align="center">
   <a href="https://github.com/onlyilkr/claude-profile-switcher/actions/workflows/ci.yml"><img src="https://github.com/onlyilkr/claude-profile-switcher/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/onlyilkr/claude-profile-switcher/releases"><img src="https://img.shields.io/github/v/release/onlyilkr/claude-profile-switcher" alt="Release"></a>
@@ -781,6 +785,8 @@ touching your accounts, and the macOS and Claude quirks that shaped the code.
   Priyanshu, the Windows original this is a port of, including the profile layout, the sign-in routing
   rules and the badge design (with ideas by [Sukarth](https://github.com/Sukarth)).
 - [claude-migrate](https://github.com/onlyilkr/claude-migrate), whose rules the chat transfer follows.
+
+See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ## Contributing and security
 
